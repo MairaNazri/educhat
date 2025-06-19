@@ -26,16 +26,72 @@ if($userResult->num_rows == 0) {
 }
 
 $user = $userResult->fetch_assoc();
-$profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["profile_picture"] : "uploads/profiles/default-avatar.png";
+
+// Handle profile picture path - check multiple possible locations (same logic as manageUser.php)
+$profilePic = '';
+if (!empty($user["profile_picture"])) {
+    // Check if it already starts with uploads/
+    if (strpos($user["profile_picture"], 'uploads/') === 0) {
+        $profilePic = $user["profile_picture"];
+    } else {
+        $profilePic = "uploads/" . $user["profile_picture"];
+    }
+}
+
+// Set default if no profile picture or file doesn't exist
+if (empty($profilePic) || !file_exists($profilePic)) {
+    $profilePic = "uploads/profiles/default-avatar.png";
+    // If default doesn't exist either, we'll use a fallback div
+    if (!file_exists($profilePic)) {
+        $profilePic = null;
+    }
+}
 ?>
+
+<!-- Add CSS for profile picture fallback -->
+<style>
+.profile-pic-large {
+    width: 100px;
+    height: 100px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid #6c52a1;
+    background-color: #f0f0f0;
+}
+
+.profile-pic-fallback-large {
+    width: 100px;
+    height: 100px;
+    border-radius: 50%;
+    background-color: #6c52a1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 36px;
+    border: 3px solid #6c52a1;
+}
+</style>
 
 <div class="user-details">
     <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 20px;">
-        <img src="<?php echo $profilePic; ?>" style="width: 100px; height: 100px; border-radius: 50%; object-fit: cover; margin-bottom: 10px;">
-        <h3 style="color: #6c52a1;"><?php echo $user["name"]; ?></h3>
-        <p style="color: #666;"><?php echo $user["email"]; ?></p>
+        <?php if ($profilePic && file_exists($profilePic)): ?>
+            <img src="<?php echo $profilePic; ?>" class="profile-pic-large" alt="Profile Picture" 
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="profile-pic-fallback-large" style="display: none;">
+                <?php echo strtoupper(substr($user["name"], 0, 1)); ?>
+            </div>
+        <?php else: ?>
+            <div class="profile-pic-fallback-large">
+                <?php echo strtoupper(substr($user["name"], 0, 1)); ?>
+            </div>
+        <?php endif; ?>
+        
+        <h3 style="color: #6c52a1; margin-top: 10px;"><?php echo htmlspecialchars($user["name"]); ?></h3>
+        <p style="color: #666;"><?php echo htmlspecialchars($user["email"]); ?></p>
         <div style="background-color: #6c52a1; color: white; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem;">
-            <?php echo $user["proficiency_level"]; ?>
+            <?php echo htmlspecialchars($user["proficiency_level"]); ?>
         </div>
         <p style="font-size: 0.8rem; margin-top: 8px;">Member since: <?php echo date("M d, Y", strtotime($user["created_at"])); ?></p>
     </div>
@@ -77,8 +133,8 @@ $profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["prof
                     '<span style="background-color: #4caf50; color: white; padding: 3px 8px; border-radius: 10px; font-size: 0.8rem;">Passed</span>' : 
                     '<span style="background-color: #f44336; color: white; padding: 3px 8px; border-radius: 10px; font-size: 0.8rem;">Failed</span>';
                 echo "<tr style='border-bottom: 1px solid #ddd;'>
-                        <td style='padding: 10px;'>".$quiz["title"]."</td>
-                        <td style='padding: 10px;'>".$quiz["score"]."%</td>
+                        <td style='padding: 10px;'>".htmlspecialchars($quiz["title"])."</td>
+                        <td style='padding: 10px;'>".htmlspecialchars($quiz["score"])."%</td>
                         <td style='padding: 10px;'>".$status."</td>
                         <td style='padding: 10px;'>".date("M d, Y", strtotime($quiz["completed_date"]))."</td>
                       </tr>";
@@ -95,7 +151,7 @@ $profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["prof
     <div id="flashcards" class="tab-content">
         <?php
         // Fetch user's flashcards
-        $flashcardSql = "SELECT * FROM flashcard WHERE userID = ? ORDER BY created_at DESC";
+        $flashcardSql = "SELECT * FROM flashcard WHERE userID = ? ORDER BY flashcardID DESC";
         $flashcardStmt = $conn->prepare($flashcardSql);
         $flashcardStmt->bind_param("i", $userId);
         $flashcardStmt->execute();
@@ -107,12 +163,11 @@ $profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["prof
             while($card = $flashcardResult->fetch_assoc()) {
                 echo '<div style="background-color: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
                         <div style="background-color: #6c52a1; color: white; padding: 8px 12px;">
-                            <strong>'.$card["vocabulary"].'</strong>
+                            <strong>'.htmlspecialchars($card["vocabulary"]).'</strong>
                         </div>
                         <div style="padding: 12px;">
-                            <p><strong>Meaning:</strong> '.$card["meaning"].'</p>
-                            <p><strong>Example:</strong> <em>'.$card["example"].'</em></p>
-                            <div style="font-size: 0.7rem; color: #666; margin-top: 8px;">Created: '.date("M d, Y", strtotime($card["created_at"])).'</div>
+                            <p><strong>Meaning:</strong> '.htmlspecialchars($card["meaning"]).'</p>
+                            <p><strong>Example:</strong> <em>'.htmlspecialchars($card["example"]).'</em></p>
                         </div>
                       </div>';
             }
@@ -140,7 +195,7 @@ $profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["prof
             while($achievement = $achievementResult->fetch_assoc()) {
                 echo '<div style="background-color: white; border-radius: 10px; padding: 12px; display: flex; justify-content: space-between; align-items: center;">
                         <div>
-                            <h5 style="margin: 0; color: #6c52a1;"><i class="fas fa-trophy" style="color: #ffc107; margin-right: 8px;"></i>'.$achievement["achievement_name"].'</h5>
+                            <h5 style="margin: 0; color: #6c52a1;"><i class="fas fa-trophy" style="color: #ffc107; margin-right: 8px;"></i>'.htmlspecialchars($achievement["achievement_name"]).'</h5>
                         </div>
                         <div style="font-size: 0.8rem; color: #666;">'.date("M d, Y", strtotime($achievement["earned_date"])).'</div>
                       </div>';
@@ -156,12 +211,13 @@ $profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["prof
     <!-- Chatbot History Tab -->
     <div id="chatbot" class="tab-content">
         <?php
-        // Fetch user's chatbot interactions
-        $chatbotSql = "SELECT ci.*, cc.topic, cc.prompt 
-                     FROM chatbotinteraction ci
-                     JOIN chatbot_content cc ON ci.chatbot_contentID = cc.chatbot_contentID
-                     WHERE ci.userID = ? 
-                     ORDER BY ci.timestamp DESC";
+        // Fetch user's chatbot interactions with progress status
+        $chatbotSql = "SELECT ct.title as topic, cup.is_completed, cup.last_updated, cs.prompt
+                     FROM chatbot_user_progress cup
+                     JOIN chatbot_topic ct ON cup.topicID = ct.topicID
+                     LEFT JOIN chatbot_step cs ON cup.current_stepID = cs.stepID
+                     WHERE cup.userID = ? 
+                     ORDER BY cup.last_updated DESC";
         $chatbotStmt = $conn->prepare($chatbotSql);
         $chatbotStmt->bind_param("i", $userId);
         $chatbotStmt->execute();
@@ -169,22 +225,41 @@ $profilePic = !empty($user["profile_picture"]) ? "uploads/profiles/".$user["prof
         
         if($chatbotResult->num_rows > 0) {
             while($chat = $chatbotResult->fetch_assoc()) {
-                $status = $chat["completed"] ? 
+                $status = $chat["is_completed"] ? 
                     '<span style="background-color: #4caf50; color: white; padding: 3px 8px; border-radius: 10px; font-size: 0.8rem;">Completed</span>' : 
-                    '<span style="background-color: #ff9800; color: white; padding: 3px 8px; border-radius: 10px; font-size: 0.8rem;">Incomplete</span>';
+                    '<span style="background-color: #ff9800; color: white; padding: 3px 8px; border-radius: 10px; font-size: 0.8rem;">In Progress</span>';
+                
+                // Get recent interactions for this topic
+                $interactionSql = "SELECT ci.user_response, ci.timestamp, cs.prompt
+                                 FROM chatbot_interaction ci
+                                 JOIN chatbot_step cs ON ci.stepID = cs.stepID
+                                 JOIN chatbot_topic ct ON cs.topicID = ct.topicID
+                                 WHERE ci.userID = ? AND ct.title = ?
+                                 ORDER BY ci.timestamp DESC LIMIT 1";
+                $interactionStmt = $conn->prepare($interactionSql);
+                $interactionStmt->bind_param("is", $userId, $chat["topic"]);
+                $interactionStmt->execute();
+                $interactionResult = $interactionStmt->get_result();
+                $interaction = $interactionResult->fetch_assoc();
                 
                 echo '<details style="background-color: white; border-radius: 10px; margin-bottom: 10px; overflow: hidden;">
                         <summary style="padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; background-color: #f0eaf7;">
-                            <div style="font-weight: bold; color: #6c52a1;">'.$chat["topic"].'</div>
+                            <div style="font-weight: bold; color: #6c52a1;">'.htmlspecialchars($chat["topic"]).'</div>
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 '.$status.'
-                                <span style="font-size: 0.8rem; color: #666;">'.date("M d, Y H:i", strtotime($chat["timestamp"])).'</span>
+                                <span style="font-size: 0.8rem; color: #666;">'.date("M d, Y H:i", strtotime($chat["last_updated"])).'</span>
                             </div>
                         </summary>
-                        <div style="padding: 15px; border-top: 1px solid #ddd;">
-                            <p><strong>Prompt:</strong> '.$chat["prompt"].'</p>
-                            <p style="margin-top: 10px;"><strong>User Response:</strong> '.$chat["user_response"].'</p>
-                        </div>
+                        <div style="padding: 15px; border-top: 1px solid #ddd;">';
+                
+                if($interaction) {
+                    echo '<p><strong>Current/Last Prompt:</strong> '.htmlspecialchars($interaction["prompt"]).'</p>
+                          <p style="margin-top: 10px;"><strong>User Response:</strong> '.htmlspecialchars($interaction["user_response"]).'</p>';
+                } else {
+                    echo '<p><strong>Current Prompt:</strong> '.($chat["prompt"] ? htmlspecialchars($chat["prompt"]) : 'Topic started but no interactions yet').'</p>';
+                }
+                
+                echo '</div>
                       </details>';
             }
         } else {

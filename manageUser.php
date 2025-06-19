@@ -176,6 +176,21 @@ $result = $conn->query($sql);
             height: 40px;
             border-radius: 50%;
             object-fit: cover;
+            border: 2px solid #6c52a1;
+            background-color: #f0f0f0;
+        }
+
+        .profile-pic-fallback {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: #6c52a1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
         }
 
         .btn {
@@ -332,11 +347,38 @@ $result = $conn->query($sql);
                 <?php
                 if ($result->num_rows > 0) {
                     while($row = $result->fetch_assoc()) {
-                        $profilePic = !empty($row["profile_picture"]) ? "uploads/profiles/".$row["profile_picture"] : "uploads/profiles/default-avatar.png";
+                        // Handle profile picture path - check multiple possible locations
+                        $profilePic = '';
+                        if (!empty($row["profile_picture"])) {
+                            // Check if it already starts with uploads/
+                            if (strpos($row["profile_picture"], 'uploads/') === 0) {
+                                $profilePic = $row["profile_picture"];
+                            } else {
+                                $profilePic = "uploads/" . $row["profile_picture"];
+                            }
+                        }
+                        
+                        // Set default if no profile picture or file doesn't exist
+                        if (empty($profilePic) || !file_exists($profilePic)) {
+                            $profilePic = "uploads/profiles/default-avatar.png";
+                            // If default doesn't exist either, we'll use a fallback div
+                            if (!file_exists($profilePic)) {
+                                $profilePic = null;
+                            }
+                        }
+                        
                         echo "<tr>";
-                        echo "<td><img src='".$profilePic."' class='profile-pic'>".$row["name"]."</td>";
-                        echo "<td>".$row["email"]."</td>";
-                        echo "<td>".$row["proficiency_level"]."</td>";
+                        echo "<td>";
+                        if ($profilePic && file_exists($profilePic)) {
+                            echo "<img src='".$profilePic."' class='profile-pic' alt='Profile Picture' onerror='this.style.display=\"none\"; this.nextElementSibling.style.display=\"flex\";'>";
+                            echo "<div class='profile-pic-fallback' style='display: none;'>".strtoupper(substr($row["name"], 0, 1))."</div>";
+                        } else {
+                            echo "<div class='profile-pic-fallback'>".strtoupper(substr($row["name"], 0, 1))."</div>";
+                        }
+                        echo htmlspecialchars($row["name"]);
+                        echo "</td>";
+                        echo "<td>".htmlspecialchars($row["email"])."</td>";
+                        echo "<td>".htmlspecialchars($row["proficiency_level"])."</td>";
                         echo "<td>".$row["quizzes_taken"]."</td>";
                         echo "<td><button class='btn btn-info view-details' data-id='".$row["userID"]."'><i class='fas fa-eye'></i> View Details</button></td>";
                         echo "</tr>";
@@ -424,6 +466,16 @@ $result = $conn->query($sql);
                 });
             });
         }
+
+        // Add spinning animation for loading
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+        `;
+        document.head.appendChild(style);
     </script>
 </body>
 </html>
