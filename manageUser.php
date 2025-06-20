@@ -1,21 +1,31 @@
 <?php
 session_start();
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
-    header("Location: login.html");
+    header("Location: login.php");
     exit();
 }
 
-// Database connection
-$conn = new mysqli("localhost", "root", "", "website");
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
+// Include server connection file (same as manageQuiz.php)
+include 'server.php';
+
+// Check if connection exists and is working
+if (!isset($conn)) {
+    die("Database connection not established. Check server.php file.");
 }
 
 // Fetch all users (non-admin)
 $sql = "SELECT u.userID, u.name, u.email, u.profile_picture, u.proficiency_level, 
         (SELECT COUNT(*) FROM quizresult qr WHERE qr.userID = u.userID) as quizzes_taken 
         FROM user u WHERE u.role != 'admin' ORDER BY u.name";
+
 $result = $conn->query($sql);
+
+// If the main query fails, try a simpler version
+if (!$result) {
+    // Fallback query without the subquery in case quizresult table doesn't exist
+    $sql = "SELECT userID, name, email, profile_picture, proficiency_level FROM user WHERE role != 'admin' ORDER BY name";
+    $result = $conn->query($sql);
+}
 ?>
 
 <!DOCTYPE html>
@@ -211,6 +221,16 @@ $result = $conn->query($sql);
             background-color: #5a4388;
         }
 
+        .debug-info {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            color: #856404;
+            display: none; /* Hidden by default */
+        }
+
         .modal {
             display: none;
             position: fixed;
@@ -333,6 +353,8 @@ $result = $conn->query($sql);
             </div>
         </div>
 
+
+
         <table class="user-table">
             <thead>
                 <tr>
@@ -345,44 +367,29 @@ $result = $conn->query($sql);
             </thead>
             <tbody>
                 <?php
-                if ($result->num_rows > 0) {
+                if ($result && $result->num_rows > 0) {
                     while($row = $result->fetch_assoc()) {
-                        // Handle profile picture path - check multiple possible locations
-                        $profilePic = '';
-                        if (!empty($row["profile_picture"])) {
-                            // Check if it already starts with uploads/
-                            if (strpos($row["profile_picture"], 'uploads/') === 0) {
-                                $profilePic = $row["profile_picture"];
-                            } else {
-                                $profilePic = "uploads/" . $row["profile_picture"];
-                            }
-                        }
-                        
-                        // Set default if no profile picture or file doesn't exist
-                        if (empty($profilePic) || !file_exists($profilePic)) {
-                            $profilePic = "uploads/profiles/default-avatar.png";
-                            // If default doesn't exist either, we'll use a fallback div
-                            if (!file_exists($profilePic)) {
-                                $profilePic = null;
-                            }
-                        }
-                        
-                        echo "<tr>";
-                        echo "<td>";
-                        if ($profilePic && file_exists($profilePic)) {
-                            echo "<img src='".$profilePic."' class='profile-pic' alt='Profile Picture' onerror='this.style.display=\"none\"; this.nextElementSibling.style.display=\"flex\";'>";
-                            echo "<div class='profile-pic-fallback' style='display: none;'>".strtoupper(substr($row["name"], 0, 1))."</div>";
-                        } else {
-                            echo "<div class='profile-pic-fallback'>".strtoupper(substr($row["name"], 0, 1))."</div>";
-                        }
-                        echo htmlspecialchars($row["name"]);
-                        echo "</td>";
-                        echo "<td>".htmlspecialchars($row["email"])."</td>";
-                        echo "<td>".htmlspecialchars($row["proficiency_level"])."</td>";
-                        echo "<td>".$row["quizzes_taken"]."</td>";
-                        echo "<td><button class='btn btn-info view-details' data-id='".$row["userID"]."'><i class='fas fa-eye'></i> View Details</button></td>";
-                        echo "</tr>";
-                    }
+                    $profilePic = !empty($row["profile_picture"]) ? $row["profile_picture"] : 'uploads/default-avatar.png';
+
+                    echo "<tr>";
+                    echo "<td>";
+                    
+                    // Profile picture + fallback
+                    echo "<img src='" . htmlspecialchars($profilePic) . "' class='profile-pic' alt='Profile Picture'
+                        onerror='this.style.display=\"none\"; this.nextElementSibling.style.display=\"flex\";'>";
+                    echo "<div class='profile-pic-fallback' style='display: none;'>" . strtoupper(substr($row["name"], 0, 1)) . "</div>";
+                    
+                    echo htmlspecialchars($row["name"]);
+                    echo "</td>";
+
+                    echo "<td>" . htmlspecialchars($row["email"]) . "</td>";
+                    echo "<td>" . htmlspecialchars($row["proficiency_level"] ?? 'Not Set') . "</td>";
+                    echo "<td>" . ($row["quizzes_taken"] ?? '0') . "</td>";
+                    echo "<td><button class='btn btn-info view-details' data-id='" . $row["userID"] . "'>
+                        <i class='fas fa-eye'></i> View Details</button></td>";
+                    echo "</tr>";
+                }
+
                 } else {
                     echo "<tr><td colspan='5' style='text-align: center;'>No users found</td></tr>";
                 }

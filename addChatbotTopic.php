@@ -1,31 +1,27 @@
 <?php
 session_start();
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
-    header("Location: login.html");
+    header("Location: login.php");
     exit();
 }
-
-// DB Connection
-$conn = new mysqli("localhost", "root", "", "website");
-
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
+include 'server.php';
 
 // Process form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $title = $_POST['title'];
     $proficiency = $_POST['proficiency_level'];
 
-    $stmt = $conn->prepare("INSERT INTO chatbot_topic (title, proficiency_level) VALUES (?, ?)");
-    $stmt->bind_param("ss", $title, $proficiency);
-    
-    if ($stmt->execute()) {
-        echo "<script>alert('Topic added successfully!'); window.location='manageChatbot.php';</script>";
-    } else {
-        $error = "Error: " . $stmt->error;
+    if (!empty($title) && !empty($proficiency)) {
+        $stmt = $conn->prepare("INSERT INTO chatbot_topic (title, proficiency_level) VALUES (?, ?)");
+        $stmt->bind_param("ss", $title, $proficiency);
+        
+        if ($stmt->execute()) {
+            echo "<script>alert('Topic added successfully!'); window.location='manageChatbot.php';</script>";
+        } else {
+            $error = "Error: " . $stmt->error;
+        }
+        $stmt->close();
     }
-    $stmt->close();
 }
 ?>
 
@@ -120,13 +116,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 40px;
+      margin-bottom: 30px;
     }
 
     .header h1 {
       font-size: 1.8rem;
       color: #6c52a1;
-      display: inline-block;
       margin-left: 10px;
     }
 
@@ -151,30 +146,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       color: #6c52a1;
     }
 
-    .nav-link[data-tooltip]:hover::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      left: 100%;
-      top: 50%;
-      transform: translateY(-50%);
-      background-color: #6c52a1;
-      color: white;
-      padding: 4px 8px;
-      border-radius: 4px;
-      white-space: nowrap;
-      margin-left: 10px;
-      font-size: 0.85rem;
-      z-index: 10;
-    }
-
-    /* Form styling */
-    .form-container {
+    .content {
       background-color: #e8dcfa;
       border-radius: 15px;
-      padding: 30px;
-      max-width: 600px;
-      margin: 0 auto;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+      padding: 20px;
     }
 
     .form-title {
@@ -184,18 +159,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       text-align: center;
     }
 
-    .form-group {
+    form {
       margin-bottom: 20px;
     }
 
-    .form-label {
+    label {
       display: block;
       margin-bottom: 8px;
       font-weight: 500;
       color: #6c52a1;
     }
 
-    .form-control {
+    input[type="text"], select {
       width: 100%;
       padding: 12px 15px;
       border: 2px solid #d1bbec;
@@ -203,21 +178,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       font-size: 1rem;
       transition: border-color 0.3s;
       background-color: #f8f4ff;
+      margin-bottom: 15px;
     }
 
-    .form-control:focus {
-      outline: none;
-      border-color: #8f75b5;
-    }
-
-    .form-select {
-      width: 100%;
-      padding: 12px 15px;
-      border: 2px solid #d1bbec;
-      border-radius: 10px;
-      font-size: 1rem;
-      transition: border-color 0.3s;
-      background-color: #f8f4ff;
+    select {
       appearance: none;
       background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236c52a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
       background-repeat: no-repeat;
@@ -225,7 +189,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       background-size: 15px;
     }
 
-    .form-select:focus {
+    input[type="text"]:focus, select:focus {
       outline: none;
       border-color: #8f75b5;
     }
@@ -233,10 +197,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .btn-container {
       display: flex;
       gap: 15px;
-      margin-top: 30px;
+      margin-top: 20px;
     }
 
-    .btn {
+    button {
       flex: 1;
       padding: 12px;
       border: none;
@@ -265,12 +229,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       background-color: #c1a7e3;
     }
 
+    .back-link {
+      display: inline-block;
+      margin-top: 15px;
+      color: #6c52a1;
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .back-link:hover {
+      text-decoration: underline;
+    }
+
     .error-message {
       color: #e74c3c;
       background-color: #fde8e7;
       padding: 10px;
       border-radius: 10px;
       margin-bottom: 20px;
+    }
+
+    .nav-link[data-tooltip]:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      background-color: #6c52a1;
+      color: white;
+      padding: 4px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      margin-left: 10px;
+      font-size: 0.85rem;
+      z-index: 10;
     }
   </style>
 </head>
@@ -307,12 +299,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <h1>Add Chatbot Topic</h1>
       </div>
       <div class="user-info">
-        <span><?php echo htmlspecialchars($_SESSION['username']); ?></span>
+        <span><?php echo htmlspecialchars($_SESSION['username'] ?? ''); ?></span>
         <div class="user-avatar"></div>
       </div>
     </div>
 
-    <div class="form-container">
+    <div class="content">
       <div class="form-title">Create a New Chatbot Topic</div>
       
       <?php if (isset($error)): ?>
@@ -320,26 +312,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <?php endif; ?>
       
       <form method="POST">
-        <div class="form-group">
-          <label class="form-label" for="title">Topic Title</label>
-          <input type="text" id="title" name="title" class="form-control" required placeholder="Enter topic title">
-        </div>
+        <label for="title">Topic Title:</label>
+        <input type="text" id="title" name="title" required placeholder="Enter topic title">
         
-        <div class="form-group">
-          <label class="form-label" for="proficiency_level">Proficiency Level</label>
-          <select id="proficiency_level" name="proficiency_level" class="form-select" required>
-            <option value="" disabled selected>-- Select Level --</option>
-            <option value="Beginner">Beginner</option>
-            <option value="Intermediate">Intermediate</option>
-            <option value="Advanced">Advanced</option>
-          </select>
-        </div>
+        <label for="proficiency_level">Proficiency Level:</label>
+        <select id="proficiency_level" name="proficiency_level" required>
+          <option value="" disabled selected>-- Select Level --</option>
+          <option value="Beginner">Beginner</option>
+          <option value="Intermediate">Intermediate</option>
+          <option value="Advanced">Advanced</option>
+        </select>
         
         <div class="btn-container">
-          <button type="button" class="btn btn-secondary" onclick="location.href='manageChatbot.php'">Cancel</button>
-          <button type="submit" class="btn btn-primary">Create Topic</button>
+          <button type="button" class="btn-secondary" onclick="location.href='manageChatbot.php'">Cancel</button>
+          <button type="submit" class="btn-primary">Create Topic</button>
         </div>
       </form>
+      
+      <a class="back-link" href="manageChatbot.php">
+        <i class="fas fa-arrow-left"></i> Back to Manage Chatbot
+      </a>
     </div>
   </div>
 

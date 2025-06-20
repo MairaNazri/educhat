@@ -1,24 +1,55 @@
 <?php
 session_start();
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
-    header("Location: login.html");
+    header("Location: login.php");
     exit();
 }
 
-// DB Connection
-$conn = new mysqli("localhost", "root", "", "website");
+// Include server connection file (same as manageUser.php)
+include 'server.php';
 
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
+// Check if connection exists and is working
+if (!isset($conn)) {
+    die("Database connection not established. Check server.php file.");
 }
 
-// Fetch stats
-$totalUsers = $conn->query("SELECT COUNT(*) as total FROM user")->fetch_assoc()['total'];
-$activeUsers = $conn->query("SELECT COUNT(DISTINCT userID) as total FROM quizresult")->fetch_assoc()['total'];
-$totalQuizzes = $conn->query("SELECT COUNT(*) as total FROM quiz")->fetch_assoc()['total'];
-$completedQuizzes = $conn->query("SELECT COUNT(*) as total FROM quizresult")->fetch_assoc()['total'];
+// Initialize variables with default values
+$totalUsers = 0;
+$activeUsers = 0;
+$totalQuizzes = 0;
+$completedQuizzes = 0;
 
-$conn->close();
+// Fetch stats with error handling
+try {
+    // Total users (non-admin)
+    $result = $conn->query("SELECT COUNT(*) as total FROM user WHERE role != 'admin'");
+    if ($result) {
+        $totalUsers = $result->fetch_assoc()['total'];
+    }
+
+    // Active users (users who have taken at least one quiz)
+    $result = $conn->query("SELECT COUNT(DISTINCT userID) as total FROM quizresult");
+    if ($result) {
+        $activeUsers = $result->fetch_assoc()['total'];
+    }
+
+    // Total quizzes
+    $result = $conn->query("SELECT COUNT(*) as total FROM quiz");
+    if ($result) {
+        $totalQuizzes = $result->fetch_assoc()['total'];
+    }
+
+    // Completed quizzes
+    $result = $conn->query("SELECT COUNT(*) as total FROM quizresult");
+    if ($result) {
+        $completedQuizzes = $result->fetch_assoc()['total'];
+    }
+} catch (Exception $e) {
+    // Log error or handle it appropriately
+    error_log("Database query error in adminDash.php: " . $e->getMessage());
+}
+
+// Don't close connection here as it might be used elsewhere
 ?>
 
 <!DOCTYPE html>
@@ -190,6 +221,16 @@ $conn->close();
       font-size: 0.85rem;
       z-index: 10;
     }
+
+    .debug-info {
+      background-color: #fff3cd;
+      border: 1px solid #ffeaa7;
+      padding: 10px;
+      margin-bottom: 20px;
+      border-radius: 5px;
+      color: #856404;
+      display: none; /* Hidden by default */
+    }
   </style>
 </head>
 <body>
@@ -218,7 +259,6 @@ $conn->close();
     </a>
   </div>
 
-
   <div class="main" id="main">
     <div class="header">
       <div style="display: flex; align-items: center;">
@@ -229,6 +269,16 @@ $conn->close();
         <span><?php echo htmlspecialchars($_SESSION['username']); ?></span>
         <div class="user-avatar"></div>
       </div>
+    </div>
+
+    <!-- Debug info (hidden by default) -->
+    <div class="debug-info" id="debugInfo">
+      <strong>Debug Info:</strong><br>
+      Database connection: <?php echo isset($conn) ? 'Connected' : 'Not connected'; ?><br>
+      Total Users: <?php echo $totalUsers; ?><br>
+      Active Users: <?php echo $activeUsers; ?><br>
+      Total Quizzes: <?php echo $totalQuizzes; ?><br>
+      Completed Quizzes: <?php echo $completedQuizzes; ?>
     </div>
 
     <div class="cards">
@@ -260,6 +310,19 @@ $conn->close();
       const sidebar = document.getElementById("sidebar");
       sidebar.classList.toggle("collapsed");
     }
+
+    // Toggle debug info (for troubleshooting)
+    function toggleDebugInfo() {
+      const debugInfo = document.getElementById("debugInfo");
+      debugInfo.style.display = debugInfo.style.display === 'none' ? 'block' : 'none';
+    }
+
+    // Add keyboard shortcut for debug info (Ctrl+Shift+D)
+    document.addEventListener('keydown', function(e) {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        toggleDebugInfo();
+      }
+    });
 
     const ctx = document.getElementById('quizChart').getContext('2d');
     const quizChart = new Chart(ctx, {

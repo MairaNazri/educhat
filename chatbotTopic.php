@@ -4,7 +4,7 @@ require 'server.php'; // mysqli connection
 
 // Check if user is logged in
 if (!isset($_SESSION['userID']) || $_SESSION['role'] !== 'user') {
-    header("Location: login.html");
+    header("Location: login.php");
     exit();
 }
 
@@ -24,7 +24,11 @@ $user = $userResult->fetch_assoc();
 $proficiency = $user['proficiency_level'];
 
 // Get all topics
-$topics = $conn->query("SELECT * FROM chatbot_topic ORDER BY topicID");
+$stmt = $conn->prepare("SELECT * FROM chatbot_topic WHERE proficiency_level = ? ORDER BY topicID");
+$stmt->bind_param("s", $proficiency);
+$stmt->execute();
+$topics = $stmt->get_result();
+
 
 // Get user progress
 $progress = [];
@@ -311,7 +315,7 @@ while ($row = $topics->fetch_assoc()) {
   <div class="main" id="main">
     <div class="top-box">
       <h2>Chatbot Topics - <?php echo ucfirst(htmlspecialchars($proficiency)); ?> Level</h2>
-      <p>Complete topics in order to unlock the next ones. Chat with our AI to learn and practice your skills on each topic.</p>
+      <p>Complete topics in order to unlock the next ones. Chat with our chatbot to learn and practice your skills on each topic.</p>
     </div>
 
     <div class="topics-container">

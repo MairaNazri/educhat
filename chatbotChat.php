@@ -1,99 +1,183 @@
 <?php
 session_start();
-include 'server.php';
+require 'server.php'; // Your DB connection
+
+if (!isset($_SESSION['userID'])) {
+    header('Location: login.php');
+    exit();
+}
 
 $userID = $_SESSION['userID'];
-$topicID = intval($_GET['topicID']);
-$feedback = "";
-$isCompleted = false;
+$topicID = $_GET['topicID'] ?? null;
 
-// Handle retake request
-if (isset($_GET['retake']) && $_GET['retake'] == '1') {
-    // Reset user progress
-    $conn->query("UPDATE chatbot_user_progress SET is_completed=0, last_updated=NOW() WHERE userID=$userID AND topicID=$topicID");
-    
-    // Delete all previous interactions for this topic
-    $conn->query("DELETE ci FROM chatbot_interaction ci 
-                  JOIN chatbot_step cs ON ci.stepID = cs.stepID 
-                  WHERE ci.userID = $userID AND cs.topicID = $topicID");
-    
-    // Reset to first step
-    $stepQuery = $conn->query("SELECT stepID FROM chatbot_step WHERE topicID=$topicID ORDER BY step_number ASC LIMIT 1");
-    $stepRow = $stepQuery->fetch_assoc();
-    $firstStepID = $stepRow['stepID'];
-    $conn->query("UPDATE chatbot_user_progress SET current_stepID=$firstStepID WHERE userID=$userID AND topicID=$topicID");
-    
-    // Redirect to clean chat
+if (!$topicID) {
+    die("Topic not specified.");
+}
+
+// RETAKE logic
+if (isset($_GET['retake']) && $_GET['retake'] == 1) {
+    $stmt = $conn->prepare("DELETE FROM chatbot_interaction WHERE userID = ? AND stepID IN (SELECT stepID FROM chatbot_step WHERE topicID = ?)");
+    $stmt->bind_param("ii", $userID, $topicID);
+    $stmt->execute();
+
+    $stmt = $conn->prepare("DELETE FROM chatbot_user_progress WHERE userID = ? AND topicID = ?");
+    $stmt->bind_param("ii", $userID, $topicID);
+    $stmt->execute();
+
     header("Location: chatbotChat.php?topicID=$topicID");
     exit();
 }
 
 // Get topic title
-$topicQuery = $conn->query("SELECT title FROM chatbot_topic WHERE topicID = $topicID");
-$topicTitle = $topicQuery->fetch_assoc()['title'];
+$stmt = $conn->prepare("SELECT title FROM chatbot_topic WHERE topicID = ?");
+$stmt->bind_param("i", $topicID);
+$stmt->execute();
+$stmt->bind_result($topicTitle);
+$stmt->fetch();
+$stmt->close();
 
-// Get user progress
-$progressQuery = $conn->query("SELECT * FROM chatbot_user_progress WHERE userID=$userID AND topicID=$topicID");
-if ($progressQuery->num_rows > 0) {
-    $progress = $progressQuery->fetch_assoc();
-    $currentStepID = $progress['current_stepID'];
-    $isCompleted = $progress['is_completed'];
-} else {
-    // No progress yet
-    $stepQuery = $conn->query("SELECT stepID FROM chatbot_step WHERE topicID=$topicID ORDER BY step_number ASC LIMIT 1");
-    $stepRow = $stepQuery->fetch_assoc();
-    $currentStepID = $stepRow['stepID'];
-    $conn->query("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated) 
-                  VALUES ($userID, $topicID, $currentStepID, 0, NOW())");
-}
-
-// Get current step info
-$currentStepQuery = $conn->query("SELECT * FROM chatbot_step WHERE stepID = $currentStepID");
-$currentStep = $currentStepQuery->fetch_assoc();
-
-// Handle user response
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
+// Handle POST (user response)
+// Handle POST (user response)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_response'])) {
     $userResponse = trim($_POST['user_response']);
-    $isCorrect = preg_match('/' . $currentStep['expected_pattern'] . '/i', $userResponse) ? 1 : 0;
-    $feedback = $isCorrect ? $currentStep['correct_feedback'] : $currentStep['wrong_feedback'];
 
-    // Store interaction
-    $stmt = $conn->prepare("INSERT INTO chatbot_interaction (userID, stepID, user_response, is_correct, timestamp) 
-                            VALUES (?, ?, ?, ?, NOW())");
+    $stmt = $conn->prepare("SELECT current_stepID FROM chatbot_user_progress WHERE userID = ? AND topicID = ?");
+    $stmt->bind_param("ii", $userID, $topicID);
+    $stmt->execute();
+    $stmt->bind_result($currentStepID);
+    $stmt->fetch();
+    $stmt->close();
+
+    if (!$currentStepID) {
+        $stmt = $conn->prepare("SELECT stepID FROM chatbot_step WHERE topicID = ? ORDER BY step_number ASC LIMIT 1");
+        $stmt->bind_param("i", $topicID);
+        $stmt->execute();
+        $stmt->bind_result($currentStepID);
+        $stmt->fetch();
+        $stmt->close();
+    }
+
+    $stmt = $conn->prepare("SELECT expected_pattern, correct_feedback, wrong_feedback, next_stepID FROM chatbot_step WHERE stepID = ?");
+    $stmt->bind_param("i", $currentStepID);
+    $stmt->execute();
+    $stmt->bind_result($expectedPattern, $correctFeedback, $wrongFeedback, $nextStepID);
+    $stmt->fetch();
+    $stmt->close();
+
+    $isCorrect = preg_match("/$expectedPattern/i", $userResponse) ? 1 : 0;
+
+    $stmt = $conn->prepare("INSERT INTO chatbot_interaction (userID, stepID, user_response, is_correct) VALUES (?, ?, ?, ?)");
     $stmt->bind_param("iisi", $userID, $currentStepID, $userResponse, $isCorrect);
     $stmt->execute();
+    $stmt->close();
 
-    // Proceed if correct
-    if ($isCorrect) {
-        $nextStepID = $currentStep['next_stepID'];
-        if ($nextStepID) {
-            $conn->query("UPDATE chatbot_user_progress SET current_stepID=$nextStepID, last_updated=NOW() 
-                          WHERE userID=$userID AND topicID=$topicID");
-            header("Location: chatbotChat.php?topicID=$topicID");
-            exit();
-        } else {
-            $conn->query("UPDATE chatbot_user_progress SET is_completed=1, last_updated=NOW() 
-                          WHERE userID=$userID AND topicID=$topicID");
-            $isCompleted = true;
-        }
+    // Store in session to display after reload
+    $_SESSION['last_feedback'] = [
+        'stepID' => $currentStepID,
+        'user_response' => $userResponse,
+        'is_correct' => $isCorrect,
+        'correct_feedback' => $correctFeedback,
+        'wrong_feedback' => $wrongFeedback
+    ];
+
+    $stmt = $conn->prepare("SELECT prompt FROM chatbot_step WHERE stepID = ?");
+    $stmt->bind_param("i", $currentStepID);
+    $stmt->execute();
+    $stmt->bind_result($prompt);
+    $stmt->fetch();
+    $stmt->close();
+    $_SESSION['last_feedback']['prompt'] = $prompt;
+
+    if ($nextStepID) {
+        $stmt = $conn->prepare("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated)
+            VALUES (?, ?, ?, 0, NOW())
+            ON DUPLICATE KEY UPDATE current_stepID = VALUES(current_stepID), is_completed = 0");
+        $stmt->bind_param("iii", $userID, $topicID, $nextStepID);
+    } else {
+        $stmt = $conn->prepare("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated)
+            VALUES (?, ?, ?, 1, NOW())
+            ON DUPLICATE KEY UPDATE is_completed = 1, last_updated = NOW()");
+        $stmt->bind_param("iii", $userID, $topicID, $currentStepID);
+    }
+    $stmt->execute();
+    $stmt->close();
+
+    // Do not redirect — allow feedback to render
+}
+
+
+// Get conversation history
+$stmt = $conn->prepare("SELECT s.prompt, i.user_response, i.is_correct, s.correct_feedback, s.wrong_feedback
+    FROM chatbot_interaction i
+    JOIN chatbot_step s ON i.stepID = s.stepID
+    WHERE i.userID = ? AND s.topicID = ?
+    ORDER BY i.timestamp ASC");
+$stmt->bind_param("ii", $userID, $topicID);
+$stmt->execute();
+$result = $stmt->get_result();
+$conversation = $result->fetch_all(MYSQLI_ASSOC);
+// Append temporary feedback from session
+if (isset($_SESSION['last_feedback'])) {
+    $fb = $_SESSION['last_feedback'];
+    $conversation[] = [
+        'prompt' => $fb['prompt'],
+        'user_response' => $fb['user_response'],
+        'is_correct' => $fb['is_correct'],
+        'correct_feedback' => $fb['correct_feedback'],
+        'wrong_feedback' => $fb['wrong_feedback']
+    ];
+    unset($_SESSION['last_feedback']);
+}
+
+$stmt->close();
+
+// Get progress and current step
+$stmt = $conn->prepare("SELECT current_stepID, is_completed FROM chatbot_user_progress WHERE userID = ? AND topicID = ?");
+$stmt->bind_param("ii", $userID, $topicID);
+$stmt->execute();
+$stmt->bind_result($currentStepID, $isCompleted);
+$stmt->fetch();
+$stmt->close();
+
+// ✅ NEW: Initialize progress if no current step and not completed
+if (!$currentStepID && !$isCompleted) {
+    $stmt = $conn->prepare("SELECT stepID FROM chatbot_step WHERE topicID = ? ORDER BY step_number ASC LIMIT 1");
+    $stmt->bind_param("i", $topicID);
+    $stmt->execute();
+    $stmt->bind_result($firstStepID);
+    $stmt->fetch();
+    $stmt->close();
+
+    if ($firstStepID) {
+        $stmt = $conn->prepare("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated)
+            VALUES (?, ?, ?, 0, NOW())
+            ON DUPLICATE KEY UPDATE current_stepID = VALUES(current_stepID), is_completed = 0");
+        $stmt->bind_param("iii", $userID, $topicID, $firstStepID);
+        $stmt->execute();
+        $stmt->close();
+
+        $currentStepID = $firstStepID;
     }
 }
 
-// Load conversation history
-$chatQuery = $conn->query("
-    SELECT ci.*, cs.prompt, cs.correct_feedback, cs.wrong_feedback 
-    FROM chatbot_interaction ci 
-    JOIN chatbot_step cs ON ci.stepID = cs.stepID 
-    WHERE ci.userID = $userID AND cs.topicID = $topicID 
-    ORDER BY ci.timestamp ASC
-");
+// Get the current prompt if in progress
+$currentPrompt = null;
+if (!$isCompleted && $currentStepID) {
+    $stmt = $conn->prepare("SELECT prompt FROM chatbot_step WHERE stepID = ?");
+    $stmt->bind_param("i", $currentStepID);
+    $stmt->execute();
+    $stmt->bind_result($currentPrompt);
+    $stmt->fetch();
+    $stmt->close();
+}
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chatbot Session - <?php echo htmlspecialchars($topicTitle); ?></title>
+    <title>Chatbot - <?= htmlspecialchars($topicTitle) ?></title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
         * {
@@ -105,730 +189,620 @@ $chatQuery = $conn->query("
 
         body {
             background-color: #d9c8f4;
-            min-height: 100vh;
             display: flex;
-            flex-direction: column;
+            min-height: 100vh;
+            transition: all 0.3s ease;
+            overflow-x: hidden;
         }
 
-        .top-header {
-            background: linear-gradient(135deg, #b187d6, #8a75c9);
-            padding: 20px 40px;
+        .sidebar {
+            width: 240px;
+            background-color: #b187d6;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            border-top-right-radius: 20px;
+            border-bottom-right-radius: 20px;
+            transition: width 0.3s ease;
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 100vh;
+            z-index: 10;
+        }
+
+        .sidebar.collapsed {
+            width: 70px;
+        }
+
+        .sidebar .logo {
+            font-size: 1.8rem;
+            font-weight: bold;
+            background-color: black;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
             color: white;
+            margin-bottom: 20px;
+        }
+
+        .toggle-btn {
+            color: white;
+            cursor: pointer;
+            font-size: 1.2rem;
+            text-align: right;
+            margin-bottom: 20px;
+        }
+
+        .nav-section {
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+        }
+
+        .nav-item {
             display: flex;
             align-items: center;
+            gap: 12px;
+            font-size: 1rem;
+            padding: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            color: white;
+            transition: background 0.2s ease;
+            text-decoration: none;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            background-color: #6e50a1;
+        }
+
+        .nav-item i {
+            min-width: 20px;
+            text-align: center;
+        }
+
+        .logout-btn {
+            background-color: white;
+            color: #6e50a1;
+            font-weight: bold;
+            border: none;
+            padding: 10px;
+            border-radius: 10px;
+            cursor: pointer;
+            margin-top: 30px;
+            transition: 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .logout-btn:hover {
+            background-color: #f3e6ff;
+        }
+
+        .main {
+            flex: 1;
+            margin-left: 240px;
+            transition: margin-left 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background-color: #e5dffc;
+        }
+
+        .sidebar.collapsed ~ .main {
+            margin-left: 70px;
+        }
+
+        .collapsed .nav-item span,
+        .collapsed .logo,
+        .collapsed .logout-btn span {
+            display: none;
+        }
+
+        .collapsed .nav-item,
+        .collapsed .logout-btn {
+            justify-content: center;
+        }
+
+        .collapsed .logout-btn {
+            padding: 10px 0;
+        }
+
+        /* Chat Header */
+        .chat-header {
+            background-color: #f5f2ff;
+            padding: 20px 30px;
+            border-bottom: 2px solid #e0daf3;
+            display: flex;
             justify-content: space-between;
+            align-items: center;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
 
-        .header-left {
+        .chat-header h2 {
+            color: #333;
+            font-size: 1.5rem;
+            margin: 0;
+        }
+
+        .chat-header .topic-info {
             display: flex;
             align-items: center;
             gap: 15px;
         }
 
-        .educhat-logo {
-            background-color: black;
-            padding: 8px 12px;
-            border-radius: 5px;
-            font-size: 1.2rem;
-            font-weight: bold;
-            color: white;
-        }
-
-        .header-title {
-            font-size: 1.4rem;
-            font-weight: 600;
-        }
-
-        .header-subtitle {
-            font-size: 0.9rem;
-            opacity: 0.9;
-            margin-top: 2px;
-        }
-
-        .header-right {
+        .header-actions {
             display: flex;
-            align-items: center;
-            gap: 15px;
+            gap: 10px;
         }
 
-        .back-btn, .retake-btn {
-            background: rgba(255,255,255,0.2);
+        .header-btn {
+            background-color: #8a75c9;
             color: white;
-            text-decoration: none;
-            padding: 10px 20px;
-            border-radius: 25px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s ease;
-            border: 1px solid rgba(255,255,255,0.3);
+            border: none;
+            padding: 10px 15px;
+            border-radius: 8px;
             cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
 
-        .back-btn:hover, .retake-btn:hover {
-            background: rgba(255,255,255,0.3);
+        .header-btn:hover {
+            background-color: #6f5baa;
             transform: translateY(-1px);
         }
 
-        .retake-btn {
-            background: rgba(255, 107, 107, 0.8);
-            border: 1px solid rgba(255, 107, 107, 0.5);
+        .header-btn.retake {
+            background-color: #ff6b6b;
         }
 
-        .retake-btn:hover {
-            background: rgba(255, 107, 107, 0.9);
+        .header-btn.retake:hover {
+            background-color: #ff5252;
         }
 
-        .main-container {
+        /* Chat Container */
+        .chat-container {
             flex: 1;
             display: flex;
-            justify-content: center;
-            padding: 30px 40px;
-        }
-
-        .chat-wrapper {
-            width: 100%;
-            max-width: 800px;
-            background: #f5f2ff;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            display: flex;
             flex-direction: column;
-            height: 75vh;
             overflow: hidden;
-        }
-
-        .chat-header {
-            background: white;
-            padding: 20px 25px;
-            border-radius: 20px 20px 0 0;
-            border-bottom: 1px solid #e5e5e5;
-        }
-
-        .chat-header h3 {
-            color: #333;
-            font-size: 1.2rem;
-            margin-bottom: 5px;
-        }
-
-        .chat-status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.9rem;
-            color: #666;
-        }
-
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            background: #6fcf97;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
         }
 
         .chat-messages {
             flex: 1;
             overflow-y: auto;
-            padding: 20px 25px;
-            background: #fafbff;
+            padding: 20px 30px;
+            background: linear-gradient(135deg, #e5dffc 0%, #f0ebff 100%);
         }
 
         .message {
-            display: flex;
             margin-bottom: 20px;
-            animation: fadeIn 0.3s ease;
+            animation: fadeInUp 0.3s ease;
         }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
-        .message.bot {
-            justify-content: flex-start;
+        .message-content {
+            max-width: 80%;
+            padding: 15px 20px;
+            border-radius: 18px;
+            position: relative;
+            word-wrap: break-word;
         }
 
-        .message.user {
+        .bot-message {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .bot-message .message-content {
+            background: linear-gradient(135deg, #ffffff 0%, #f8f6ff 100%);
+            border: 1px solid #e0daf3;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-left: 0;
+        }
+
+        .user-message {
+            display: flex;
             justify-content: flex-end;
         }
 
-        .message-bubble {
-            max-width: 70%;
-            padding: 15px 20px;
-            border-radius: 20px;
-            line-height: 1.5;
-            word-wrap: break-word;
-            position: relative;
-        }
-
-        .message.bot .message-bubble {
-            background: white;
-            color: #333;
-            border-bottom-left-radius: 5px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            border: 1px solid #e5e5e5;
-        }
-
-        .message.user .message-bubble {
-            background: linear-gradient(135deg, #b187d6, #8a75c9);
+        .user-message .message-content {
+            background: linear-gradient(135deg, #8a75c9 0%, #b187d6 100%);
             color: white;
-            border-bottom-right-radius: 5px;
-            box-shadow: 0 2px 10px rgba(177, 135, 214, 0.3);
+            margin-right: 0;
+            box-shadow: 0 2px 10px rgba(138, 117, 201, 0.3);
         }
 
-        .message-avatar {
-            width: 35px;
-            height: 35px;
+        .bot-avatar {
+            width: 40px;
+            height: 40px;
             border-radius: 50%;
+            background: linear-gradient(135deg, #8a75c9 0%, #b187d6 100%);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1rem;
-            margin: 0 10px;
+            color: white;
+            font-weight: bold;
+            flex-shrink: 0;
+            box-shadow: 0 2px 10px rgba(138, 117, 201, 0.3);
         }
 
-        .bot .message-avatar {
-            background: linear-gradient(135deg, #b187d6, #8a75c9);
+        .feedback-message {
+            margin-top: 10px;
+        }
+
+        .feedback-message .message-content {
+            font-size: 0.9rem;
+            padding: 10px 15px;
+        }
+
+        .feedback-correct {
+            background: linear-gradient(135deg, #6fcf97 0%, #5cb85c 100%);
             color: white;
         }
 
-        .user .message-avatar {
-            background: #6e50a1;
+        .feedback-wrong {
+            background: linear-gradient(135deg, #ff6b6b 0%, #e74c3c 100%);
             color: white;
         }
 
-        .chat-input-container {
-            background: white;
-            padding: 20px 25px;
-            border-radius: 0 0 20px 20px;
-            border-top: 1px solid #e5e5e5;
+        /* Input Area */
+        .chat-input-area {
+            background-color: #f5f2ff;
+            padding: 20px 30px;
+            border-top: 2px solid #e0daf3;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
         }
 
-        .chat-input-form {
+        .input-form {
             display: flex;
-            gap: 12px;
-            align-items: flex-end;
+            gap: 15px;
+            align-items: center;
+            max-width: 1000px;
+            margin: 0 auto;
         }
 
-        .input-wrapper {
+        .input-container {
             flex: 1;
             position: relative;
         }
 
-        .chat-input {
+        .user-input {
             width: 100%;
             padding: 15px 20px;
-            border: 2px solid #e5e5e5;
+            border: 2px solid #e0daf3;
             border-radius: 25px;
             font-size: 1rem;
             outline: none;
             transition: all 0.3s ease;
-            background: #fafbff;
+            background-color: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
 
-        .chat-input:focus {
-            border-color: #b187d6;
-            background: white;
+        .user-input:focus {
+            border-color: #8a75c9;
+            box-shadow: 0 0 0 3px rgba(138, 117, 201, 0.1);
         }
 
         .send-btn {
-            background: linear-gradient(135deg, #b187d6, #8a75c9);
+            background: linear-gradient(135deg, #8a75c9 0%, #b187d6 100%);
             color: white;
             border: none;
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
+            padding: 15px 25px;
+            border-radius: 25px;
             cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
             display: flex;
             align-items: center;
-            justify-content: center;
-            font-size: 1.2rem;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(177, 135, 214, 0.3);
+            gap: 8px;
+            box-shadow: 0 2px 10px rgba(138, 117, 201, 0.3);
         }
 
         .send-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(177, 135, 214, 0.4);
+            box-shadow: 0 4px 15px rgba(138, 117, 201, 0.4);
         }
 
         .send-btn:active {
             transform: translateY(0);
         }
 
-        .completed-container {
+        /* Completion Message */
+        .completion-message {
             text-align: center;
             padding: 40px 20px;
-            background: white;
-            border-radius: 15px;
-            margin: 20px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-        }
-
-        .completed-icon {
-            font-size: 4rem;
-            color: #6fcf97;
-            margin-bottom: 20px;
-        }
-
-        .completed-title {
-            font-size: 1.5rem;
-            color: #333;
-            margin-bottom: 10px;
-            font-weight: 600;
-        }
-
-        .completed-text {
-            color: #666;
-            margin-bottom: 30px;
-            line-height: 1.6;
-        }
-
-        .completed-actions {
-            display: flex;
-            justify-content: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .completed-btn {
-            background: linear-gradient(135deg, #b187d6, #8a75c9);
+            background: linear-gradient(135deg, #6fcf97 0%, #5cb85c 100%);
             color: white;
-            text-decoration: none;
-            padding: 12px 30px;
-            border-radius: 25px;
-            display: inline-flex;
+            border-radius: 20px;
+            margin: 20px;
+            box-shadow: 0 4px 20px rgba(108, 207, 151, 0.3);
+        }
+
+        .completion-message h3 {
+            font-size: 1.8rem;
+            margin-bottom: 10px;
+        }
+
+        .completion-message p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        /* Scrollbar Styling */
+        .chat-messages::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #8a75c9;
+            border-radius: 10px;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb:hover {
+            background: #6f5baa;
+        }
+
+        /* Responsive Design */
+        @media screen and (max-width: 768px) {
+            .main {
+                margin-left: 0;
+            }
+            
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            
+            .sidebar.show {
+                transform: translateX(0);
+            }
+            
+            .chat-header {
+                padding: 15px 20px;
+            }
+            
+            .chat-messages {
+                padding: 15px 20px;
+            }
+            
+            .chat-input-area {
+                padding: 15px 20px;
+            }
+            
+            .message-content {
+                max-width: 90%;
+            }
+            
+            .input-form {
+                gap: 10px;
+            }
+            
+            .send-btn {
+                padding: 12px 20px;
+            }
+        }
+
+        /* Loading Animation */
+        .typing-indicator {
+            display: flex;
             align-items: center;
             gap: 10px;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(177, 135, 214, 0.3);
-        }
-
-        .completed-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(177, 135, 214, 0.4);
-        }
-
-        .completed-btn.retake {
-            background: linear-gradient(135deg, #ff6b6b, #ff5252);
-            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
-        }
-
-        .completed-btn.retake:hover {
-            box-shadow: 0 6px 20px rgba(255, 107, 107, 0.4);
-        }
-
-        .typing-indicator {
-            display: none;
-            align-items: center;
-            gap: 5px;
-            color: #666;
-            font-style: italic;
-            margin-bottom: 10px;
+            padding: 15px 20px;
+            background-color: white;
+            border-radius: 18px;
+            margin: 10px 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
 
         .typing-dots {
             display: flex;
-            gap: 3px;
+            gap: 4px;
         }
 
-        .typing-dot {
+        .typing-dots span {
             width: 8px;
             height: 8px;
-            background: #b187d6;
             border-radius: 50%;
+            background-color: #8a75c9;
             animation: typing 1.4s infinite ease-in-out;
         }
 
-        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
-        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
 
         @keyframes typing {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1); }
-        }
-
-        /* Modal Styles */
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
-            animation: fadeIn 0.3s ease;
-        }
-
-        .modal-content {
-            background-color: white;
-            margin: 15% auto;
-            padding: 30px;
-            border-radius: 15px;
-            width: 90%;
-            max-width: 500px;
-            text-align: center;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-        }
-
-        .modal-icon {
-            font-size: 3rem;
-            color: #ff6b6b;
-            margin-bottom: 20px;
-        }
-
-        .modal-title {
-            font-size: 1.3rem;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 15px;
-        }
-
-        .modal-text {
-            color: #666;
-            margin-bottom: 30px;
-            line-height: 1.6;
-        }
-
-        .modal-actions {
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-
-        .modal-btn {
-            padding: 12px 25px;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .modal-btn.confirm {
-            background: linear-gradient(135deg, #ff6b6b, #ff5252);
-            color: white;
-            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
-        }
-
-        .modal-btn.confirm:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(255, 107, 107, 0.4);
-        }
-
-        .modal-btn.cancel {
-            background: #f8f9fa;
-            color: #666;
-            border: 2px solid #e5e5e5;
-        }
-
-        .modal-btn.cancel:hover {
-            background: #e5e5e5;
-        }
-
-        @media screen and (max-width: 768px) {
-            .top-header {
-                padding: 15px 20px;
-                flex-direction: column;
-                gap: 15px;
-                text-align: center;
+            0%, 80%, 100% { 
+                transform: scale(0.8);
+                opacity: 0.5;
             }
-
-            .header-right {
-                order: -1;
-                width: 100%;
-                justify-content: center;
-            }
-
-            .main-container {
-                padding: 20px;
-            }
-
-            .chat-wrapper {
-                height: 70vh;
-            }
-
-            .message-bubble {
-                max-width: 85%;
-            }
-
-            .header-title {
-                font-size: 1.2rem;
-            }
-
-            .completed-actions {
-                flex-direction: column;
-                align-items: center;
-            }
-
-            .modal-content {
-                margin: 20% auto;
-                padding: 25px;
-            }
-
-            .modal-actions {
-                flex-direction: column;
+            40% { 
+                transform: scale(1);
+                opacity: 1;
             }
         }
     </style>
 </head>
 <body>
-
-<div class="top-header">
-    <div class="header-left">
-        <div class="educhat-logo">EDUCHAT</div>
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
         <div>
-            <div class="header-title"><?php echo htmlspecialchars($topicTitle); ?></div>
-            <div class="header-subtitle">Interactive Learning Session</div>
+            <div class="toggle-btn" onclick="toggleSidebar()"><i class="fas fa-bars"></i></div>
+            <div class="logo">EDUCHAT</div>
+            <div class="nav-section">
+                <a class="nav-item" href="dashboard.php"><i class="fas fa-home"></i><span>Dashboard</span></a>
+                <a class="nav-item active" href="chatbotTopic.php"><i class="fas fa-comment"></i><span>Chatbot</span></a>
+                <a class="nav-item" href="quizSelect.php"><i class="fas fa-clipboard"></i><span>Quiz</span></a>
+                <a class="nav-item" href="flashcardDash.php"><i class="fas fa-clone"></i><span>Flashcards</span></a>
+                <a class="nav-item" href="profile.php"><i class="fas fa-user"></i><span>Profile</span></a>
+            </div>
         </div>
+        <button class="logout-btn" onclick="window.location.href='logout.php'">
+            <i class="fas fa-sign-out-alt"></i><span>Logout</span>
+        </button>
     </div>
-    <div class="header-right">
-        <?php if ($chatQuery->num_rows > 0 || $isCompleted): ?>
-            <button onclick="showRetakeModal()" class="retake-btn">
-                <i class="fas fa-redo"></i>
-                <span>Retake</span>
-            </button>
-        <?php endif; ?>
-        <a href="#" onclick="handleBackClick(event)" class="back-btn">
-            <i class="fas fa-arrow-left"></i>
-            <span>Back to Topics</span>
-        </a>
-    </div>
-</div>
 
-<div class="main-container">
-    <?php if ($isCompleted): ?>
-        <div class="completed-container">
-            <div class="completed-icon">
-                <i class="fas fa-trophy"></i>
+    <!-- Main Content -->
+    <div class="main" id="main">
+        <!-- Chat Header -->
+        <div class="chat-header">
+            <div class="topic-info">
+                <h2><i class="fas fa-robot"></i> <?= htmlspecialchars($topicTitle) ?></h2>
+                <?php if ($isCompleted): ?>
+                    <span class="header-btn" style="background-color: #6fcf97; cursor: default;">
+                        <i class="fas fa-check-circle"></i> Completed
+                    </span>
+                <?php endif; ?>
             </div>
-            <div class="completed-title">Congratulations!</div>
-            <div class="completed-text">
-                You have successfully completed this topic. Your progress has been saved and you can now move on to the next topic.
-            </div>
-            <div class="completed-actions">
-                <a href="chatbotTopic.php" class="completed-btn">
-                    <i class="fas fa-list"></i>
-                    Back to Topics
+            <div class="header-actions">
+                <a href="chatbotTopic.php" class="header-btn">
+                    <i class="fas fa-arrow-left"></i> Back to Topics
                 </a>
-                <a href="#" onclick="showRetakeModal()" class="completed-btn retake">
-                    <i class="fas fa-redo"></i>
-                    Retake Session
+                <a href="chatbotChat.php?topicID=<?= $topicID ?>&retake=1" class="header-btn retake">
+                    <i class="fas fa-redo"></i> Retake
                 </a>
             </div>
         </div>
-    <?php else: ?>
-        <div class="chat-wrapper">
-            <div class="chat-header">
-                <h3>Chat with EDUCHAT Assistant</h3>
-                <div class="chat-status">
-                    <div class="status-dot"></div>
-                    <span>Active Learning Session</span>
-                </div>
-            </div>
 
-            <div class="chat-messages" id="chat-messages">
-                <?php
-                // Rebuild past conversation
-                while ($chat = $chatQuery->fetch_assoc()) {
-                    echo "<div class='message bot'>";
-                    echo "<div class='message-avatar'><i class='fas fa-robot'></i></div>";
-                    echo "<div class='message-bubble'>" . htmlspecialchars($chat['prompt']) . "</div>";
-                    echo "</div>";
-                    
-                    echo "<div class='message user'>";
-                    echo "<div class='message-bubble'>" . htmlspecialchars($chat['user_response']) . "</div>";
-                    echo "<div class='message-avatar'><i class='fas fa-user'></i></div>";
-                    echo "</div>";
-                    
-                    $feedbackMsg = $chat['is_correct'] ? $chat['correct_feedback'] : $chat['wrong_feedback'];
-                    echo "<div class='message bot'>";
-                    echo "<div class='message-avatar'><i class='fas fa-robot'></i></div>";
-                    echo "<div class='message-bubble'>$feedbackMsg</div>";
-                    echo "</div>";
-                }
-
-                // Show current prompt
-                if (!$isCompleted && $currentStep) {
-                    echo "<div class='message bot'>";
-                    echo "<div class='message-avatar'><i class='fas fa-robot'></i></div>";
-                    echo "<div class='message-bubble'>" . htmlspecialchars($currentStep['prompt']) . "</div>";
-                    echo "</div>";
-                }
-                ?>
-                
-                <div class="typing-indicator" id="typing-indicator">
-                    <div class="message-avatar"><i class="fas fa-robot"></i></div>
-                    <div>
-                        EDUCHAT is typing
-                        <div class="typing-dots">
-                            <div class="typing-dot"></div>
-                            <div class="typing-dot"></div>
-                            <div class="typing-dot"></div>
+        <!-- Chat Container -->
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <?php foreach ($conversation as $msg): ?>
+                    <!-- Bot Question -->
+                    <div class="message bot-message">
+                        <div class="bot-avatar">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <div class="message-content">
+                            <?= htmlspecialchars($msg['prompt']) ?>
                         </div>
                     </div>
-                </div>
-            </div>
 
-            <div class="chat-input-container">
-                <form method="post" class="chat-input-form" id="chatForm">
-                    <div class="input-wrapper">
-                        <input type="text" name="user_response" class="chat-input" placeholder="Type your response here..." required autocomplete="off" id="messageInput">
+                    <!-- User Response -->
+                    <div class="message user-message">
+                        <div class="message-content">
+                            <?= htmlspecialchars($msg['user_response']) ?>
+                        </div>
                     </div>
-                    <button type="submit" class="send-btn" id="sendBtn">
-                        <i class="fas fa-paper-plane"></i>
-                    </button>
-                </form>
-            </div>
-        </div>
-    <?php endif; ?>
-</div>
 
-<!-- Retake Confirmation Modal -->
-<div id="retakeModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-icon">
-            <i class="fas fa-exclamation-triangle"></i>
-        </div>
-        <div class="modal-title">Retake Chatbot Session?</div>
-        <div class="modal-text">
-            Are you sure you want to retake this chatbot session? This will delete all your current progress and conversation history, and you'll start from the beginning.
-        </div>
-        <div class="modal-actions">
-            <a href="chatbotChat.php?topicID=<?php echo $topicID; ?>&retake=1" class="modal-btn confirm">
-                <i class="fas fa-redo"></i>
-                Yes, Retake
-            </a>
-            <button onclick="hideRetakeModal()" class="modal-btn cancel">
-                <i class="fas fa-times"></i>
-                Cancel
-            </button>
+                    <!-- Bot Feedback -->
+                    <div class="message bot-message feedback-message">
+                        <div class="bot-avatar">
+                            <i class="fas fa-<?= $msg['is_correct'] ? 'check' : 'times' ?>"></i>
+                        </div>
+                        <div class="message-content <?= $msg['is_correct'] ? 'feedback-correct' : 'feedback-wrong' ?>">
+                            <?= htmlspecialchars($msg['is_correct'] ? $msg['correct_feedback'] : $msg['wrong_feedback']) ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+
+                <?php if ($currentPrompt && !$isCompleted): ?>
+                    <!-- Current Question -->
+                    <div class="message bot-message">
+                        <div class="bot-avatar">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <div class="message-content">
+                            <?= htmlspecialchars($currentPrompt) ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <?php if ($isCompleted): ?>
+                    <div class="completion-message">
+                        <h3><i class="fas fa-trophy"></i> Congratulations!</h3>
+                        <p>You have successfully completed this topic. Great job on your learning journey!</p>
+                    </div>
+                <?php endif; ?>
+            </div>
+
+            <!-- Input Area -->
+            <?php if ($currentPrompt && !$isCompleted): ?>
+                <div class="chat-input-area">
+                    <form method="POST" class="input-form" id="chatForm">
+                        <div class="input-container">
+                            <input type="text" name="user_response" class="user-input" 
+                                   placeholder="Type your response here..." required autofocus>
+                        </div>
+                        <button type="submit" class="send-btn">
+                            <i class="fas fa-paper-plane"></i>
+                            Send
+                        </button>
+                    </form>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
-</div>
 
-<script>
-    const chatMessages = document.getElementById('chat-messages');
-    const chatForm = document.getElementById('chatForm');
-    const messageInput = document.getElementById('messageInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const typingIndicator = document.getElementById('typing-indicator');
-    const retakeModal = document.getElementById('retakeModal');
-
-    // Auto-scroll to bottom
-    function scrollToBottom() {
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
-    // Show typing indicator
-    function showTyping() {
-        typingIndicator.style.display = 'flex';
-        scrollToBottom();
-    }
-
-    // Hide typing indicator
-    function hideTyping() {
-        typingIndicator.style.display = 'none';
-    }
-
-    // Show retake modal
-    function showRetakeModal() {
-        retakeModal.style.display = 'block';
-        document.body.style.overflow = 'hidden';
-    }
-
-    // Hide retake modal
-    function hideRetakeModal() {
-        retakeModal.style.display = 'none';
-        document.body.style.overflow = 'auto';
-    }
-
-    // Close modal when clicking outside
-    window.onclick = function(event) {
-        if (event.target == retakeModal) {
-            hideRetakeModal();
+    <script>
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('collapsed');
         }
-    }
 
-    // Handle form submission
-    if (chatForm) {
-        chatForm.addEventListener('submit', function(e) {
-            const message = messageInput.value.trim();
-            if (!message) {
+        // Auto-scroll to bottom of chat
+        function scrollToBottom() {
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Scroll to bottom on page load
+        window.addEventListener('load', scrollToBottom);
+
+        // Handle form submission with better UX
+        document.getElementById('chatForm')?.addEventListener('submit', function(e) {
+            const input = this.querySelector('input[name="user_response"]');
+            const sendBtn = this.querySelector('.send-btn');
+            
+            if (input.value.trim() === '') {
                 e.preventDefault();
+                input.focus();
                 return;
             }
-
-            // Show user message immediately
-            const userMsg = document.createElement('div');
-            userMsg.className = 'message user';
-            userMsg.innerHTML = `
-                <div class="message-bubble">${message}</div>
-                <div class="message-avatar"><i class="fas fa-user"></i></div>
-            `;
-            chatMessages.appendChild(userMsg);
             
-            // Show typing indicator
-            showTyping();
-            
-            // Disable input and button
-            messageInput.disabled = true;
+            // Disable form to prevent double submission
             sendBtn.disabled = true;
-            
-            scrollToBottom();
+            sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
         });
-    }
 
-    // Handle back button click
-    function handleBackClick(event) {
-        event.preventDefault();
-        const isCompleted = <?= $isCompleted ? 'true' : 'false' ?>;
-        if (!isCompleted) {
-            const confirmLeave = confirm("Are you sure you want to leave this chat? Your progress will be saved.");
-            if (!confirmLeave) return;
-        }
-        window.location.href = 'chatbotTopic.php';
-    }
-
-    // Focus on input when page loads
-    if (messageInput) {
-        messageInput.focus();
-    }
-
-    // Initial scroll to bottom
-    scrollToBottom();
-
-    // Handle Enter key for sending messages
-    if (messageInput) {
-        messageInput.addEventListener('keydown', function(e) {
+        // Handle Enter key in input
+        document.querySelector('.user-input')?.addEventListener('keypress', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                chatForm.submit();
+                document.getElementById('chatForm').submit();
             }
         });
-    }
 
-    // Handle Escape key to close modal
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape' && retakeModal.style.display === 'block') {
-            hideRetakeModal();
+        // Mobile sidebar toggle
+        if (window.innerWidth <= 768) {
+            document.querySelector('.toggle-btn').addEventListener('click', function() {
+                document.getElementById('sidebar').classList.toggle('show');
+            });
         }
-    });
-</script>
-
+    </script>
 </body>
 </html>

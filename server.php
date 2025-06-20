@@ -2,7 +2,7 @@
 $servername = "localhost";       // keep as 'localhost'
 $username = "root";              // XAMPP default
 $password = "";                  // XAMPP default is empty
-$dbname = "website";             // <-- your actual DB name
+$dbname = "chatbot";             // <-- your actual DB name
 
 $conn = new mysqli($servername, $username, $password, $dbname);
 
