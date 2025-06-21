@@ -1,174 +1,235 @@
 <?php
 session_start();
-require 'server.php'; // Your DB connection
+require_once 'server.php';
 
+// Check if user is logged in
 if (!isset($_SESSION['userID'])) {
     header('Location: login.php');
     exit();
 }
 
 $userID = $_SESSION['userID'];
-$topicID = $_GET['topicID'] ?? null;
 
+// Get topic ID from URL parameter
+$topicID = isset($_GET['topicID']) ? intval($_GET['topicID']) : null;
 if (!$topicID) {
-    die("Topic not specified.");
-}
-
-// RETAKE logic
-if (isset($_GET['retake']) && $_GET['retake'] == 1) {
-    $stmt = $conn->prepare("DELETE FROM chatbot_interaction WHERE userID = ? AND stepID IN (SELECT stepID FROM chatbot_step WHERE topicID = ?)");
-    $stmt->bind_param("ii", $userID, $topicID);
-    $stmt->execute();
-
-    $stmt = $conn->prepare("DELETE FROM chatbot_user_progress WHERE userID = ? AND topicID = ?");
-    $stmt->bind_param("ii", $userID, $topicID);
-    $stmt->execute();
-
-    header("Location: chatbotChat.php?topicID=$topicID");
+    header('Location: chatbotTopic.php'); // Redirect to chatbotTopic.php if no topic specified
     exit();
 }
 
-// Get topic title
-$stmt = $conn->prepare("SELECT title FROM chatbot_topic WHERE topicID = ?");
+// Get topic information
+$sql = "SELECT title, proficiency_level FROM chatbot_topic WHERE topicID = ?";
+$stmt = $conn->prepare($sql);
 $stmt->bind_param("i", $topicID);
 $stmt->execute();
-$stmt->bind_result($topicTitle);
-$stmt->fetch();
-$stmt->close();
-
-// Handle POST (user response)
-// Handle POST (user response)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_response'])) {
-    $userResponse = trim($_POST['user_response']);
-
-    $stmt = $conn->prepare("SELECT current_stepID FROM chatbot_user_progress WHERE userID = ? AND topicID = ?");
-    $stmt->bind_param("ii", $userID, $topicID);
-    $stmt->execute();
-    $stmt->bind_result($currentStepID);
-    $stmt->fetch();
-    $stmt->close();
-
-    if (!$currentStepID) {
-        $stmt = $conn->prepare("SELECT stepID FROM chatbot_step WHERE topicID = ? ORDER BY step_number ASC LIMIT 1");
-        $stmt->bind_param("i", $topicID);
-        $stmt->execute();
-        $stmt->bind_result($currentStepID);
-        $stmt->fetch();
-        $stmt->close();
-    }
-
-    $stmt = $conn->prepare("SELECT expected_pattern, correct_feedback, wrong_feedback, next_stepID FROM chatbot_step WHERE stepID = ?");
-    $stmt->bind_param("i", $currentStepID);
-    $stmt->execute();
-    $stmt->bind_result($expectedPattern, $correctFeedback, $wrongFeedback, $nextStepID);
-    $stmt->fetch();
-    $stmt->close();
-
-    $isCorrect = preg_match("/$expectedPattern/i", $userResponse) ? 1 : 0;
-
-    $stmt = $conn->prepare("INSERT INTO chatbot_interaction (userID, stepID, user_response, is_correct) VALUES (?, ?, ?, ?)");
-    $stmt->bind_param("iisi", $userID, $currentStepID, $userResponse, $isCorrect);
-    $stmt->execute();
-    $stmt->close();
-
-    // Store in session to display after reload
-    $_SESSION['last_feedback'] = [
-        'stepID' => $currentStepID,
-        'user_response' => $userResponse,
-        'is_correct' => $isCorrect,
-        'correct_feedback' => $correctFeedback,
-        'wrong_feedback' => $wrongFeedback
-    ];
-
-    $stmt = $conn->prepare("SELECT prompt FROM chatbot_step WHERE stepID = ?");
-    $stmt->bind_param("i", $currentStepID);
-    $stmt->execute();
-    $stmt->bind_result($prompt);
-    $stmt->fetch();
-    $stmt->close();
-    $_SESSION['last_feedback']['prompt'] = $prompt;
-
-    if ($nextStepID) {
-        $stmt = $conn->prepare("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated)
-            VALUES (?, ?, ?, 0, NOW())
-            ON DUPLICATE KEY UPDATE current_stepID = VALUES(current_stepID), is_completed = 0");
-        $stmt->bind_param("iii", $userID, $topicID, $nextStepID);
-    } else {
-        $stmt = $conn->prepare("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated)
-            VALUES (?, ?, ?, 1, NOW())
-            ON DUPLICATE KEY UPDATE is_completed = 1, last_updated = NOW()");
-        $stmt->bind_param("iii", $userID, $topicID, $currentStepID);
-    }
-    $stmt->execute();
-    $stmt->close();
-
-    // Do not redirect — allow feedback to render
-}
-
-
-// Get conversation history
-$stmt = $conn->prepare("SELECT s.prompt, i.user_response, i.is_correct, s.correct_feedback, s.wrong_feedback
-    FROM chatbot_interaction i
-    JOIN chatbot_step s ON i.stepID = s.stepID
-    WHERE i.userID = ? AND s.topicID = ?
-    ORDER BY i.timestamp ASC");
-$stmt->bind_param("ii", $userID, $topicID);
-$stmt->execute();
 $result = $stmt->get_result();
-$conversation = $result->fetch_all(MYSQLI_ASSOC);
-// Append temporary feedback from session
-if (isset($_SESSION['last_feedback'])) {
-    $fb = $_SESSION['last_feedback'];
-    $conversation[] = [
-        'prompt' => $fb['prompt'],
-        'user_response' => $fb['user_response'],
-        'is_correct' => $fb['is_correct'],
-        'correct_feedback' => $fb['correct_feedback'],
-        'wrong_feedback' => $fb['wrong_feedback']
-    ];
-    unset($_SESSION['last_feedback']);
+
+if ($result->num_rows === 0) {
+    header('Location: chatbotTopic.php'); // Redirect if topic not found
+    exit();
 }
 
-$stmt->close();
+$topicInfo = $result->fetch_assoc();
 
-// Get progress and current step
-$stmt = $conn->prepare("SELECT current_stepID, is_completed FROM chatbot_user_progress WHERE userID = ? AND topicID = ?");
-$stmt->bind_param("ii", $userID, $topicID);
-$stmt->execute();
-$stmt->bind_result($currentStepID, $isCompleted);
-$stmt->fetch();
-$stmt->close();
+// Handle AJAX requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    header('Content-Type: application/json');
+    
+    switch ($_POST['action']) {
+        case 'start_topic':
+            $topicID = intval($_POST['topicID']);
+            echo json_encode(startTopic($conn, $userID, $topicID));
+            exit();
+            
+        case 'retake_topic':
+            $topicID = intval($_POST['topicID']);
+            echo json_encode(retakeTopic($conn, $userID, $topicID));
+            exit();
+            
+        case 'send_message':
+            $message = trim($_POST['message']);
+            $stepID = intval($_POST['stepID']);
+            echo json_encode(processUserResponse($conn, $userID, $stepID, $message));
+            exit();
+            
+        case 'get_progress':
+            $topicID = intval($_POST['topicID']);
+            echo json_encode(getUserProgress($conn, $userID, $topicID));
+            exit();
+    }
+}
 
-// ✅ NEW: Initialize progress if no current step and not completed
-if (!$currentStepID && !$isCompleted) {
-    $stmt = $conn->prepare("SELECT stepID FROM chatbot_step WHERE topicID = ? ORDER BY step_number ASC LIMIT 1");
+// Function to start a topic
+function startTopic($conn, $userID, $topicID) {
+    // Get the first step of the topic
+    $sql = "SELECT stepID, prompt FROM chatbot_step WHERE topicID = ? ORDER BY step_number ASC LIMIT 1";
+    $stmt = $conn->prepare($sql);
     $stmt->bind_param("i", $topicID);
     $stmt->execute();
-    $stmt->bind_result($firstStepID);
-    $stmt->fetch();
-    $stmt->close();
-
-    if ($firstStepID) {
-        $stmt = $conn->prepare("INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated)
-            VALUES (?, ?, ?, 0, NOW())
-            ON DUPLICATE KEY UPDATE current_stepID = VALUES(current_stepID), is_completed = 0");
-        $stmt->bind_param("iii", $userID, $topicID, $firstStepID);
-        $stmt->execute();
-        $stmt->close();
-
-        $currentStepID = $firstStepID;
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows === 0) {
+        return ['success' => false, 'message' => 'Topic not found or has no steps'];
     }
+    
+    $step = $result->fetch_assoc();
+    
+    // Check if user already has progress for this topic
+    $sql = "SELECT current_stepID FROM chatbot_user_progress WHERE userID = ? AND topicID = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("ii", $userID, $topicID);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        // User has existing progress, get current step
+        $progress = $result->fetch_assoc();
+        $currentStepID = $progress['current_stepID'];
+        
+        $sql = "SELECT stepID, prompt FROM chatbot_step WHERE stepID = ?";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("i", $currentStepID);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        if ($result->num_rows > 0) {
+            $step = $result->fetch_assoc();
+        }
+    } else {
+        // Create new progress record
+        $sql = "INSERT INTO chatbot_user_progress (userID, topicID, current_stepID, is_completed, last_updated) VALUES (?, ?, ?, 0, NOW())";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("iii", $userID, $topicID, $step['stepID']);
+        $stmt->execute();
+    }
+    
+    return [
+        'success' => true,
+        'stepID' => $step['stepID'],
+        'prompt' => $step['prompt'],
+        'topicID' => $topicID
+    ];
 }
 
-// Get the current prompt if in progress
-$currentPrompt = null;
-if (!$isCompleted && $currentStepID) {
-    $stmt = $conn->prepare("SELECT prompt FROM chatbot_step WHERE stepID = ?");
-    $stmt->bind_param("i", $currentStepID);
+// Function to retake a topic
+function retakeTopic($conn, $userID, $topicID) {
+    // Reset progress - delete existing progress and interactions
+    $sql = "DELETE FROM chatbot_user_progress WHERE userID = ? AND topicID = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("ii", $userID, $topicID);
     $stmt->execute();
-    $stmt->bind_result($currentPrompt);
-    $stmt->fetch();
-    $stmt->close();
+    
+    // Optional: Delete interaction history for this topic
+    $sql = "DELETE ci FROM chatbot_interaction ci 
+            JOIN chatbot_step cs ON ci.stepID = cs.stepID 
+            WHERE ci.userID = ? AND cs.topicID = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("ii", $userID, $topicID);
+    $stmt->execute();
+    
+    // Start the topic again
+    return startTopic($conn, $userID, $topicID);
+}
+
+// Function to process user response
+function processUserResponse($conn, $userID, $stepID, $userResponse) {
+    // Get step details
+    $sql = "SELECT * FROM chatbot_step WHERE stepID = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $stepID);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows === 0) {
+        return ['success' => false, 'message' => 'Step not found'];
+    }
+    
+    $step = $result->fetch_assoc();
+    
+    // Check if response matches expected pattern
+    $isCorrect = checkResponse($userResponse, $step['expected_pattern']);
+    
+    // Record the interaction
+    $sql = "INSERT INTO chatbot_interaction (userID, stepID, user_response, is_correct, timestamp) VALUES (?, ?, ?, ?, NOW())";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("iisi", $userID, $stepID, $userResponse, $isCorrect);
+    $stmt->execute();
+    
+    // Get feedback based on correctness
+    $feedback = $isCorrect ? $step['correct_feedback'] : $step['wrong_feedback'];
+    $nextStepID = null;
+    $nextPrompt = null;
+    $isCompleted = false;
+    
+    if ($isCorrect) {
+        if ($step['next_stepID']) {
+            // Get next step
+            $sql = "SELECT stepID, prompt FROM chatbot_step WHERE stepID = ?";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param("i", $step['next_stepID']);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->num_rows > 0) {
+                $nextStep = $result->fetch_assoc();
+                $nextStepID = $nextStep['stepID'];
+                $nextPrompt = $nextStep['prompt'];
+                
+                // Update user progress
+                $sql = "UPDATE chatbot_user_progress SET current_stepID = ?, last_updated = NOW() WHERE userID = ? AND topicID = ?";
+                $stmt = $conn->prepare($sql);
+                $stmt->bind_param("iii", $nextStepID, $userID, $step['topicID']);
+                $stmt->execute();
+            }
+        } else {
+            // No next step means topic is completed
+            $isCompleted = true;
+            $sql = "UPDATE chatbot_user_progress SET is_completed = 1, last_updated = NOW() WHERE userID = ? AND topicID = ?";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param("ii", $userID, $step['topicID']);
+            $stmt->execute();
+        }
+    }
+    
+    return [
+        'success' => true,
+        'is_correct' => $isCorrect,
+        'feedback' => $feedback,
+        'next_stepID' => $nextStepID,
+        'next_prompt' => $nextPrompt,
+        'is_completed' => $isCompleted
+    ];
+}
+
+// Function to check if user response matches expected pattern
+function normalize($text) {
+    return strtolower(trim(preg_replace('/\s+/', ' ', $text)));
+}
+
+function checkResponse($userResponse, $expectedPattern) {
+    $userResponse = trim($userResponse);
+    $expectedPattern = trim($expectedPattern);
+    return matchPattern($userResponse, $expectedPattern);
+}
+
+function matchPattern($userResponse, $pattern) {
+    // Match using regex (case-insensitive)
+    return preg_match("/{$pattern}/i", $userResponse);
+}
+
+// Function to get user progress
+function getUserProgress($conn, $userID, $topicID) {
+    $sql = "SELECT * FROM chatbot_user_progress WHERE userID = ? AND topicID = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("ii", $userID, $topicID);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        return ['success' => true, 'progress' => $result->fetch_assoc()];
+    }
+    
+    return ['success' => false, 'message' => 'No progress found'];
 }
 ?>
 
@@ -177,631 +238,552 @@ if (!$isCompleted && $currentStepID) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chatbot - <?= htmlspecialchars($topicTitle) ?></title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <title>English Learning Chatbot - <?php echo htmlspecialchars($topicInfo['title']); ?></title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: 'Segoe UI', sans-serif;
         }
 
         body {
+            font-family: 'Segoe UI', sans-serif;
             background-color: #d9c8f4;
-            display: flex;
-            min-height: 100vh;
-            transition: all 0.3s ease;
-            overflow-x: hidden;
-        }
-
-        .sidebar {
-            width: 240px;
-            background-color: #b187d6;
             padding: 20px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            border-top-right-radius: 20px;
-            border-bottom-right-radius: 20px;
-            transition: width 0.3s ease;
-            position: fixed;
-            top: 0;
-            left: 0;
-            height: 100vh;
-            z-index: 10;
+            min-height: 100vh;
         }
 
-        .sidebar.collapsed {
-            width: 70px;
-        }
-
-        .sidebar .logo {
-            font-size: 1.8rem;
-            font-weight: bold;
-            background-color: black;
-            padding: 10px;
-            border-radius: 5px;
-            text-align: center;
-            color: white;
-            margin-bottom: 20px;
-        }
-
-        .toggle-btn {
-            color: white;
-            cursor: pointer;
-            font-size: 1.2rem;
-            text-align: right;
-            margin-bottom: 20px;
-        }
-
-        .nav-section {
-            display: flex;
-            flex-direction: column;
-            gap: 25px;
-        }
-
-        .nav-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-size: 1rem;
-            padding: 10px;
-            border-radius: 8px;
-            cursor: pointer;
-            color: white;
-            transition: background 0.2s ease;
-            text-decoration: none;
-        }
-
-        .nav-item:hover,
-        .nav-item.active {
-            background-color: #6e50a1;
-        }
-
-        .nav-item i {
-            min-width: 20px;
-            text-align: center;
-        }
-
-        .logout-btn {
-            background-color: white;
-            color: #6e50a1;
-            font-weight: bold;
-            border: none;
-            padding: 10px;
-            border-radius: 10px;
-            cursor: pointer;
-            margin-top: 30px;
-            transition: 0.2s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .logout-btn:hover {
-            background-color: #f3e6ff;
-        }
-
-        .main {
-            flex: 1;
-            margin-left: 240px;
-            transition: margin-left 0.3s ease;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            background-color: #e5dffc;
-        }
-
-        .sidebar.collapsed ~ .main {
-            margin-left: 70px;
-        }
-
-        .collapsed .nav-item span,
-        .collapsed .logo,
-        .collapsed .logout-btn span {
-            display: none;
-        }
-
-        .collapsed .nav-item,
-        .collapsed .logout-btn {
-            justify-content: center;
-        }
-
-        .collapsed .logout-btn {
-            padding: 10px 0;
-        }
-
-        /* Chat Header */
-        .chat-header {
-            background-color: #f5f2ff;
-            padding: 20px 30px;
-            border-bottom: 2px solid #e0daf3;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-
-        .chat-header h2 {
-            color: #333;
-            font-size: 1.5rem;
-            margin: 0;
-        }
-
-        .chat-header .topic-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .header-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .header-btn {
-            background-color: #8a75c9;
-            color: white;
-            border: none;
-            padding: 10px 15px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.2s ease;
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .header-btn:hover {
-            background-color: #6f5baa;
-            transform: translateY(-1px);
-        }
-
-        .header-btn.retake {
-            background-color: #ff6b6b;
-        }
-
-        .header-btn.retake:hover {
-            background-color: #ff5252;
-        }
-
-        /* Chat Container */
-        .chat-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #f5f2ff;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
             overflow: hidden;
+        }
+
+        .header {
+            background: #b187d6;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 5px;
+        }
+
+        .topic-info {
+            font-size: 1.1em;
+            opacity: 0.95;
+        }
+
+        .topic-level {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            margin-left: 10px;
+        }
+
+        .back-btn {
+            position: absolute;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(255,255,255,0.2);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.3s ease;
+        }
+
+        .back-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .chat-container {
+            height: 500px;
+            display: flex;
+            flex-direction: column;
         }
 
         .chat-messages {
             flex: 1;
+            padding: 20px;
             overflow-y: auto;
-            padding: 20px 30px;
-            background: linear-gradient(135deg, #e5dffc 0%, #f0ebff 100%);
+            background: #eee8fc;
         }
 
         .message {
-            margin-bottom: 20px;
-            animation: fadeInUp 0.3s ease;
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .message-content {
-            max-width: 80%;
-            padding: 15px 20px;
-            border-radius: 18px;
-            position: relative;
-            word-wrap: break-word;
-        }
-
-        .bot-message {
+            margin-bottom: 15px;
             display: flex;
             align-items: flex-start;
-            gap: 10px;
         }
 
-        .bot-message .message-content {
-            background: linear-gradient(135deg, #ffffff 0%, #f8f6ff 100%);
-            border: 1px solid #e0daf3;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-left: 0;
+        .message.bot {
+            justify-content: flex-start;
         }
 
-        .user-message {
-            display: flex;
+        .message.user {
             justify-content: flex-end;
         }
 
-        .user-message .message-content {
-            background: linear-gradient(135deg, #8a75c9 0%, #b187d6 100%);
-            color: white;
-            margin-right: 0;
-            box-shadow: 0 2px 10px rgba(138, 117, 201, 0.3);
+        .message-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
         }
 
-        .bot-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #8a75c9 0%, #b187d6 100%);
-            display: flex;
-            align-items: center;
+        .message.bot .message-bubble {
+            background: #e6d2f6;
+            color: #4a2778;
+        }
+
+        .message.user .message-bubble {
+            background: #6f5baa;
+            color: white;
+        }
+
+        .message.feedback {
             justify-content: center;
-            color: white;
-            font-weight: bold;
-            flex-shrink: 0;
-            box-shadow: 0 2px 10px rgba(138, 117, 201, 0.3);
         }
 
-        .feedback-message {
-            margin-top: 10px;
+        .message.feedback .message-bubble {
+            background: #f0f0f0;
+            color: #666;
+            font-style: italic;
         }
 
-        .feedback-message .message-content {
-            font-size: 0.9rem;
-            padding: 10px 15px;
+        .message.feedback.correct .message-bubble {
+            background: #d6f5e9;
+            color: #2e7d32;
         }
 
-        .feedback-correct {
-            background: linear-gradient(135deg, #6fcf97 0%, #5cb85c 100%);
-            color: white;
+        .message.feedback.incorrect .message-bubble {
+            background: #fce2e5;
+            color: #c62828;
         }
 
-        .feedback-wrong {
-            background: linear-gradient(135deg, #ff6b6b 0%, #e74c3c 100%);
-            color: white;
+        .chat-input {
+            padding: 20px;
+            border-top: 1px solid #ddd;
+            background: #f5f2ff;
         }
 
-        /* Input Area */
-        .chat-input-area {
-            background-color: #f5f2ff;
-            padding: 20px 30px;
-            border-top: 2px solid #e0daf3;
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
-        }
-
-        .input-form {
+        .input-group {
             display: flex;
-            gap: 15px;
-            align-items: center;
-            max-width: 1000px;
-            margin: 0 auto;
+            gap: 10px;
         }
 
-        .input-container {
+        .chat-input input {
             flex: 1;
-            position: relative;
-        }
-
-        .user-input {
-            width: 100%;
-            padding: 15px 20px;
-            border: 2px solid #e0daf3;
+            padding: 12px 16px;
+            border: 2px solid #ccc;
             border-radius: 25px;
-            font-size: 1rem;
+            font-size: 16px;
             outline: none;
-            transition: all 0.3s ease;
-            background-color: white;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            transition: border-color 0.3s ease;
         }
 
-        .user-input:focus {
+        .chat-input input:focus {
             border-color: #8a75c9;
-            box-shadow: 0 0 0 3px rgba(138, 117, 201, 0.1);
         }
 
         .send-btn {
-            background: linear-gradient(135deg, #8a75c9 0%, #b187d6 100%);
+            padding: 12px 24px;
+            background: #8a75c9;
             color: white;
             border: none;
-            padding: 15px 25px;
             border-radius: 25px;
             cursor: pointer;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            box-shadow: 0 2px 10px rgba(138, 117, 201, 0.3);
+            font-weight: bold;
+            transition: transform 0.2s ease;
         }
 
         .send-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(138, 117, 201, 0.4);
+            transform: scale(1.05);
         }
 
-        .send-btn:active {
-            transform: translateY(0);
+        .send-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
         }
 
-        /* Completion Message */
-        .completion-message {
+        .progress-bar {
+            height: 4px;
+            background: #d4c0ec;
+            margin: 20px;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #8a75c9;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .completed-message {
             text-align: center;
             padding: 40px 20px;
-            background: linear-gradient(135deg, #6fcf97 0%, #5cb85c 100%);
+            background: #e8f5e8;
+            color: #2e7d32;
+            font-size: 1.2em;
+            font-weight: bold;
+            display: none;
+        }
+
+        .completion-buttons {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .retake-btn, .topics-btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 1rem;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: all 0.3s ease;
+            min-width: 160px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .retake-btn {
+            background: #ff6680;
             color: white;
-            border-radius: 20px;
-            margin: 20px;
-            box-shadow: 0 4px 20px rgba(108, 207, 151, 0.3);
         }
 
-        .completion-message h3 {
-            font-size: 1.8rem;
-            margin-bottom: 10px;
-        }
-
-        .completion-message p {
-            font-size: 1.1rem;
-            opacity: 0.9;
-        }
-
-        /* Scrollbar Styling */
-        .chat-messages::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        .chat-messages::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 10px;
-        }
-
-        .chat-messages::-webkit-scrollbar-thumb {
+        .topics-btn {
             background: #8a75c9;
-            border-radius: 10px;
+            color: white;
         }
 
-        .chat-messages::-webkit-scrollbar-thumb:hover {
+        .retake-btn:hover {
+            background: #e0556f;
+        }
+
+        .topics-btn:hover {
             background: #6f5baa;
         }
 
-        /* Responsive Design */
-        @media screen and (max-width: 768px) {
-            .main {
-                margin-left: 0;
-            }
-            
-            .sidebar {
-                transform: translateX(-100%);
-            }
-            
-            .sidebar.show {
-                transform: translateX(0);
-            }
-            
-            .chat-header {
-                padding: 15px 20px;
-            }
-            
-            .chat-messages {
-                padding: 15px 20px;
-            }
-            
-            .chat-input-area {
-                padding: 15px 20px;
-            }
-            
-            .message-content {
-                max-width: 90%;
-            }
-            
-            .input-form {
-                gap: 10px;
-            }
-            
-            .send-btn {
-                padding: 12px 20px;
-            }
-        }
-
-        /* Loading Animation */
-        .typing-indicator {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 15px 20px;
-            background-color: white;
-            border-radius: 18px;
-            margin: 10px 0;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-
-        .typing-dots {
-            display: flex;
-            gap: 4px;
-        }
-
-        .typing-dots span {
-            width: 8px;
-            height: 8px;
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #8a75c9;
             border-radius: 50%;
-            background-color: #8a75c9;
-            animation: typing 1.4s infinite ease-in-out;
+            animation: spin 1s linear infinite;
         }
 
-        .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
-        .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
 
-        @keyframes typing {
-            0%, 80%, 100% { 
-                transform: scale(0.8);
-                opacity: 0.5;
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.4);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            display: none;
+        }
+
+        .loading-message {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        @media (max-width: 600px) {
+            .completion-buttons {
+                flex-direction: column;
+                align-items: center;
             }
-            40% { 
-                transform: scale(1);
-                opacity: 1;
+
+            .retake-btn, .topics-btn {
+                width: 200px;
             }
         }
     </style>
 </head>
 <body>
-    <!-- Sidebar -->
-    <div class="sidebar" id="sidebar">
-        <div>
-            <div class="toggle-btn" onclick="toggleSidebar()"><i class="fas fa-bars"></i></div>
-            <div class="logo">EDUCHAT</div>
-            <div class="nav-section">
-                <a class="nav-item" href="dashboard.php"><i class="fas fa-home"></i><span>Dashboard</span></a>
-                <a class="nav-item active" href="chatbotTopic.php"><i class="fas fa-comment"></i><span>Chatbot</span></a>
-                <a class="nav-item" href="quizSelect.php"><i class="fas fa-clipboard"></i><span>Quiz</span></a>
-                <a class="nav-item" href="flashcardDash.php"><i class="fas fa-clone"></i><span>Flashcards</span></a>
-                <a class="nav-item" href="profile.php"><i class="fas fa-user"></i><span>Profile</span></a>
-            </div>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-message">
+            <div class="loading"></div>
+            <p>Starting topic...</p>
         </div>
-        <button class="logout-btn" onclick="window.location.href='logout.php'">
-            <i class="fas fa-sign-out-alt"></i><span>Logout</span>
-        </button>
     </div>
 
-    <!-- Main Content -->
-    <div class="main" id="main">
-        <!-- Chat Header -->
-        <div class="chat-header">
+    <div class="container">
+        <div class="header">
+            <a href="chatbotTopic.php" class="back-btn">← Back</a>
+            <h1>🤖 English Learning Chatbot</h1>
             <div class="topic-info">
-                <h2><i class="fas fa-robot"></i> <?= htmlspecialchars($topicTitle) ?></h2>
-                <?php if ($isCompleted): ?>
-                    <span class="header-btn" style="background-color: #6fcf97; cursor: default;">
-                        <i class="fas fa-check-circle"></i> Completed
-                    </span>
-                <?php endif; ?>
-            </div>
-            <div class="header-actions">
-                <a href="chatbotTopic.php" class="header-btn">
-                    <i class="fas fa-arrow-left"></i> Back to Topics
-                </a>
-                <a href="chatbotChat.php?topicID=<?= $topicID ?>&retake=1" class="header-btn retake">
-                    <i class="fas fa-redo"></i> Retake
-                </a>
+                <?php echo htmlspecialchars($topicInfo['title']); ?>
+                <span class="topic-level"><?php echo htmlspecialchars($topicInfo['proficiency_level']); ?></span>
             </div>
         </div>
 
-        <!-- Chat Container -->
-        <div class="chat-container">
-            <div class="chat-messages" id="chatMessages">
-                <?php foreach ($conversation as $msg): ?>
-                    <!-- Bot Question -->
-                    <div class="message bot-message">
-                        <div class="bot-avatar">
-                            <i class="fas fa-robot"></i>
-                        </div>
-                        <div class="message-content">
-                            <?= htmlspecialchars($msg['prompt']) ?>
-                        </div>
-                    </div>
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
 
-                    <!-- User Response -->
-                    <div class="message user-message">
-                        <div class="message-content">
-                            <?= htmlspecialchars($msg['user_response']) ?>
-                        </div>
-                    </div>
-
-                    <!-- Bot Feedback -->
-                    <div class="message bot-message feedback-message">
-                        <div class="bot-avatar">
-                            <i class="fas fa-<?= $msg['is_correct'] ? 'check' : 'times' ?>"></i>
-                        </div>
-                        <div class="message-content <?= $msg['is_correct'] ? 'feedback-correct' : 'feedback-wrong' ?>">
-                            <?= htmlspecialchars($msg['is_correct'] ? $msg['correct_feedback'] : $msg['wrong_feedback']) ?>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
-
-                <?php if ($currentPrompt && !$isCompleted): ?>
-                    <!-- Current Question -->
-                    <div class="message bot-message">
-                        <div class="bot-avatar">
-                            <i class="fas fa-robot"></i>
-                        </div>
-                        <div class="message-content">
-                            <?= htmlspecialchars($currentPrompt) ?>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <?php if ($isCompleted): ?>
-                    <div class="completion-message">
-                        <h3><i class="fas fa-trophy"></i> Congratulations!</h3>
-                        <p>You have successfully completed this topic. Great job on your learning journey!</p>
-                    </div>
-                <?php endif; ?>
-            </div>
-
-            <!-- Input Area -->
-            <?php if ($currentPrompt && !$isCompleted): ?>
-                <div class="chat-input-area">
-                    <form method="POST" class="input-form" id="chatForm">
-                        <div class="input-container">
-                            <input type="text" name="user_response" class="user-input" 
-                                   placeholder="Type your response here..." required autofocus>
-                        </div>
-                        <button type="submit" class="send-btn">
-                            <i class="fas fa-paper-plane"></i>
-                            Send
-                        </button>
-                    </form>
+        <div class="chat-container" id="chatContainer">
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input">
+                <div class="input-group">
+                    <input type="text" id="messageInput" placeholder="Type your response here..." disabled>
+                    <button class="send-btn" id="sendBtn" disabled onclick="sendMessage()">Send</button>
                 </div>
-            <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="completed-message" id="completedMessage">
+            🎉 Congratulations! You've completed this topic! 🎉
+            <div class="completion-buttons">
+                <button class="retake-btn" onclick="retakeTopic()">
+                    <i class="fas fa-redo-alt"></i>
+                    <span>Retake Topic</span>
+                </button>
+                <a href="chatbotTopic.php" class="topics-btn">
+                    <i class="fas fa-list-alt"></i>
+                    <span>Browse Topics</span>
+                </a>
+            </div>
         </div>
     </div>
 
     <script>
-        function toggleSidebar() {
-            const sidebar = document.getElementById('sidebar');
-            sidebar.classList.toggle('collapsed');
-        }
+        let currentStepID = null;
+        let currentTopicID = <?php echo $topicID; ?>;
+        let isWaitingForResponse = false;
+        let totalSteps = 0;
+        let currentStep = 0;
 
-        // Auto-scroll to bottom of chat
-        function scrollToBottom() {
-            const chatMessages = document.getElementById('chatMessages');
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
-        // Scroll to bottom on page load
-        window.addEventListener('load', scrollToBottom);
-
-        // Handle form submission with better UX
-        document.getElementById('chatForm')?.addEventListener('submit', function(e) {
-            const input = this.querySelector('input[name="user_response"]');
-            const sendBtn = this.querySelector('.send-btn');
+        // Start the topic automatically on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Show loading overlay
+            document.getElementById('loadingOverlay').style.display = 'flex';
             
-            if (input.value.trim() === '') {
-                e.preventDefault();
-                input.focus();
-                return;
-            }
+            // Get total steps for progress calculation
+            getTotalSteps();
             
-            // Disable form to prevent double submission
-            sendBtn.disabled = true;
-            sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
-        });
-
-        // Handle Enter key in input
-        document.querySelector('.user-input')?.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                document.getElementById('chatForm').submit();
-            }
-        });
-
-        // Mobile sidebar toggle
-        if (window.innerWidth <= 768) {
-            document.querySelector('.toggle-btn').addEventListener('click', function() {
-                document.getElementById('sidebar').classList.toggle('show');
+            // Start the topic
+            startTopic();
+            
+            // Enter key support
+            document.getElementById('messageInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
             });
+        });
+
+        function getTotalSteps() {
+            // This is optional - you could add an AJAX call to get total steps for better progress tracking
+            // For now, we'll estimate progress based on completed steps
+        }
+
+        function startTopic() {
+            fetch('', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: `action=start_topic&topicID=${currentTopicID}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    initializeChat(data);
+                } else {
+                    alert('Error starting topic: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while starting the topic.');
+            })
+            .finally(() => {
+                // Hide loading overlay
+                document.getElementById('loadingOverlay').style.display = 'none';
+            });
+        }
+
+        function retakeTopic() {
+            // Show loading overlay
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            
+            fetch('', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: `action=retake_topic&topicID=${currentTopicID}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Reset everything
+                    currentStep = 0;
+                    
+                    // Hide completed message and show chat
+                    document.getElementById('completedMessage').style.display = 'none';
+                    document.getElementById('chatContainer').style.display = 'flex';
+                    
+                    // Reset progress bar
+                    updateProgress(0);
+                    
+                    // Initialize chat with new data
+                    initializeChat(data);
+                } else {
+                    alert('Error retaking topic: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while retaking the topic.');
+            })
+            .finally(() => {
+                // Hide loading overlay
+                document.getElementById('loadingOverlay').style.display = 'none';
+            });
+        }
+
+        function initializeChat(data) {
+            currentStepID = data.stepID;
+            
+            // Clear messages and add bot prompt
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = '';
+            addMessage('bot', data.prompt);
+            
+            // Enable input
+            document.getElementById('messageInput').disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('messageInput').focus();
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || isWaitingForResponse) return;
+            
+            // Add user message
+            addMessage('user', message);
+            input.value = '';
+            
+            // Disable input while processing
+            isWaitingForResponse = true;
+            document.getElementById('messageInput').disabled = true;
+            document.getElementById('sendBtn').disabled = true;
+            
+            // Send to server
+            fetch('', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: `action=send_message&stepID=${currentStepID}&message=${encodeURIComponent(message)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    handleResponse(data);
+                } else {
+                    alert('Error processing response: ' + data.message);
+                    enableInput();
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while processing your response.');
+                enableInput();
+            })
+            .finally(() => {
+                isWaitingForResponse = false;
+            });
+        }
+
+        function handleResponse(data) {
+            // Add feedback message
+            const feedbackClass = data.is_correct ? 'correct' : 'incorrect';
+            addMessage('feedback ' + feedbackClass, data.feedback);
+            
+            if (data.is_completed) {
+                // Topic completed
+                setTimeout(() => {
+                    document.getElementById('chatContainer').style.display = 'none';
+                    document.getElementById('completedMessage').style.display = 'block';
+                    updateProgress(100);
+                }, 1500);
+            } else if (data.next_stepID && data.is_correct) {
+                // Continue to next step (only if answer was correct)
+                currentStepID = data.next_stepID;
+                currentStep++;
+                
+                setTimeout(() => {
+                    addMessage('bot', data.next_prompt);
+                    enableInput();
+                    // Update progress (estimate based on steps completed)
+                    const progressPercent = Math.min((currentStep / 5) * 100, 90); // Assume ~5 steps, max 90% until completion
+                    updateProgress(progressPercent);
+                }, 1500);
+            } else {
+                // Stay on current step (incorrect answer) or no next step
+                setTimeout(() => {
+                    enableInput();
+                }, 1500);
+            }
+        }
+
+        function enableInput() {
+            document.getElementById('messageInput').disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('messageInput').focus();
+        }
+
+        function addMessage(type, text) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble';
+            bubble.textContent = text;
+            
+            messageDiv.appendChild(bubble);
+            messagesDiv.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateProgress(percentage) {
+            document.getElementById('progressFill').style.width = percentage + '%';
         }
     </script>
 </body>

@@ -46,8 +46,17 @@ foreach ($questions as $q) {
 
     if ($answerData && $answerData['status'] == 1) {
         $score++;
+        $isCorrect = 1;
+    } else {
+        $isCorrect = 0;
     }
+
+    // Save user's answer for review
+    $saveAnswerStmt = $conn->prepare("INSERT INTO user_answer (userID, quizID, questionID, answerID, is_correct) VALUES (?, ?, ?, ?, ?)");
+    $saveAnswerStmt->bind_param("iiiii", $userID, $quizID, $questionID, $selectedAnswerID, $isCorrect);
+    $saveAnswerStmt->execute();
 }
+
 
 // Calculate result
 $passMark = ceil($total * 0.6); // 60%
@@ -422,6 +431,9 @@ $quizName = $quizData ? $quizData['title'] : "Quiz";
             </button>
           </form>
         <?php endif; ?>
+        <a href="reviewAnswer.php?quizID=<?php echo $quizID; ?>" class="action-btn">
+          <i class="fas fa-eye"></i> Review Answers
+        </a>
         <a href="dashboard.php" class="action-btn">
           <i class="fas fa-home"></i> Dashboard
         </a>
