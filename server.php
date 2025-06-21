@@ -1,6 +1,6 @@
 <?php
 $servername = "localhost";       // keep as 'localhost'
-$username = "educhats_db";              // XAMPP default
+$username = "educhat";              // XAMPP default
 $password = "0U8euUMg+2!v7Z";                  // XAMPP default is empty
 $dbname = "educhats_db";             // <-- your actual DB name
 
